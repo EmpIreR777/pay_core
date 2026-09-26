@@ -11,33 +11,34 @@
 
 ## Задачи эпика
 
-### [ ] T-0.1. Инициализация репозитория и структура папок
+### [x] T-0.1. Инициализация репозитория и структура папок
 - **Что сделать:**
   - Оформить структуру проекта:
     - `proto/payments/v1/`
-    - `api_gateway/` (1 инстанс BFF)
-    - `core_service/` (1 инстанс Core gRPC)
-    - `workers/` (1 инстанс FastStream)
-    - `tasks/` (1 инстанс Taskiq worker + 1 scheduler)
+    - `backend/` (единый бэкенд-сервис с `uv`):
+      - `backend/src/api_gateway/` (1 инстанс BFF)
+      - `backend/src/core_service/` (1 инстанс Core gRPC)
+      - `backend/src/workers/` (1 инстанс FastStream)
+      - `backend/src/tasks/` (1 инстанс Taskiq worker + 1 scheduler)
+      - `backend/alembic/` (миграции PostgreSQL)
+      - `backend/tests/` (`unit/`, `integration/`, `e2e/`)
     - `otel_collector/`
-    - `tests/unit/`, `tests/integration/`, `tests/e2e/`
     - `infra/` (`prometheus/`, `grafana/`, `jaeger/`)
-    - `alembic/`
     - `docs/` (`plan/`, `adr/`)
   - Настроить `.gitignore` и базовый `README.md`.
-- **DoD:** `tree -L 2` показывает требуемую структуру папок, git репозиторий готов.
-- **Подтверждение пользователя:** `[ ]`
+- **DoD:** Структура папок оформлена, git репозиторий готов.
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.2. pyproject.toml + зависимости
 - **Что сделать:**
-  - Настроить Poetry (или uv).
+  - Настроить `uv` в `backend/pyproject.toml`.
   - Зависимости:
     - `core`: pydantic, pydantic-settings, sqlalchemy[asyncio], asyncpg, alembic, redis, faststream[kafka], grpcio, grpcio-tools, opentelemetry-*, structlog
     - `api`: fastapi, uvicorn, httpx, python-jose
     - `tasks`: taskiq, taskiq-kafka (или taskiq-aio-pika), taskiq-scheduler
-    - `payment`: yookassa (в extras: `poetry install -E yookassa`)
+    - `payment`: yookassa (в extras: `uv sync --extra yookassa`)
     - `dev`: pytest, pytest-asyncio, testcontainers, ruff, mypy, pre-commit
-- **DoD:** `poetry install` (или `uv sync`) проходит успешно.
+- **DoD:** `uv sync` в `backend/` проходит успешно.
 - **Подтверждение пользователя:** `[ ]`
 
 ### [ ] T-0.3. Конфиг через pydantic-settings
