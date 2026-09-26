@@ -66,11 +66,11 @@
 - **DoD:** `docker compose up -d` (compose-файл в корне), все сервисы healthy.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.7. OTel Collector — конфиг
+### [x] T-0.7. OTel Collector — конфиг
 - **Что сделать:**
   - `otel_collector/config.yaml`: receivers (otlp :4317/:4318), processors (batch, memory_limiter, resource), exporters (otlp/jaeger, prometheus :8889), pipelines (traces, metrics).
 - **DoD:** Collector стартует, принимает OTLP и отдаёт метрики для scrape.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.8. Проверка Collector end-to-end
 - **Что сделать:**
