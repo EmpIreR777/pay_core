@@ -47,16 +47,16 @@ dev = [
 lint = [
     "mypy>=1.17.1",
     "pre-commit>=4.2.0",
-    "ruff>=0.12.7",
+    "ruff>=0.16.9",
 ]
 
 [tool.ruff]
 line-length = 120
 target-version = "py314"
 cache-dir = ".ruff_cache"
+src = ["src"]
 exclude = [
     "tests/",
-    "alembic/",
 ]
 
 [tool.ruff.lint]
@@ -104,7 +104,8 @@ allowed-confusables = ["с", "е", "Н", "о"]
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["backend"]
+known-first-party = ["src"]
+known-third-party = ["alembic"]
 
 [tool.ruff.format]
 quote-style = "single"

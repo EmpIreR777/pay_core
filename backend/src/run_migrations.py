@@ -8,6 +8,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.exc import DisconnectionError
 from sqlalchemy_utils import create_database, database_exists
+
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)

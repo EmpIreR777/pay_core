@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     def SQLALCHEMY_SYNC_DB_URL(self) -> str:  # noqa: N802
         """LEGACY: синхронный DSN для старого ``alembic/env.py`` и ``run_migrations.py``.
 
-        TODO(epic-03): удалить вместе с переводом Alembic на async-паттерн
+        TODO: удалить вместе с переводом Alembic на async-паттерн
         и заменой legacy-раннера миграций. Новый код использует только
         ``DATABASE_URL`` (async, asyncpg).
         """
