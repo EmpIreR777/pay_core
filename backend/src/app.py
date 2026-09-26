@@ -18,4 +18,5 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-app.include_router(router)
+# TODO(epic-07): подключить роутеры BFF (app.include_router(api_router)).
+# Роутеры FastAPI-шлюза появляются в ЭПИК 7; здесь оставлен только каркас app.

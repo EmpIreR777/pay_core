@@ -56,6 +56,7 @@ target-version = "py314"
 cache-dir = ".ruff_cache"
 exclude = [
     "tests/",
+    "alembic/",
 ]
 
 [tool.ruff.lint]
@@ -93,7 +94,7 @@ ignore = [
 allowed-confusables = ["с", "е", "Н", "о"]
 
 [tool.ruff.lint.per-file-ignores]
-"migrations/*" = [
+"alembic/versions/*" = [
     "E402",
     "F401",
 ]
@@ -123,19 +124,13 @@ warn_unreachable = true
 python_version = "3.14"
 exclude = [
     "tests/",
-    "migrations/",
+    "alembic/",
     "storage/",
 ]
 
 [[tool.mypy.overrides]]
 module = [
-    "aiofiles",
-]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = [
-    "celery",
+    "sqlalchemy_utils.*",
 ]
 ignore_missing_imports = true
 
