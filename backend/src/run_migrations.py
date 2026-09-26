@@ -7,7 +7,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.exc import DisconnectionError
-from sqlalchemy_utils import create_database, database_exists  # type: ignore [import-untyped]
+from sqlalchemy_utils import create_database, database_exists
+
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ def run_migrations() -> None:
         check_connection(engine)
 
         # Запускаем миграции
-        migrations_path = Path(__file__).parent.parent / 'migrations'
+        migrations_path = Path(__file__).parent.parent / 'alembic'
         alembic_cfg = Config()
         alembic_cfg.set_main_option('script_location', str(migrations_path))
         alembic_cfg.set_main_option('sqlalchemy.url', sync_url)

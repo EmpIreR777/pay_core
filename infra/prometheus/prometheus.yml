@@ -1,0 +1,35 @@
+# ==============================================================================
+# Prometheus — конфигурация сбора метрик.
+#
+# ВАЖНО: приложение НЕ экспортирует метрики напрямую в Prometheus.
+# Согласно архитектуре (PLAN.md), приложение отправляет всю телеметрию
+# в OTel Collector по OTLP, а Collector пробрасывает метрики в Prometheus
+# через свой prometheus-экспортёр на :8889. Prometheus только скрейпит его.
+# ==============================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    env: local
+    project: pay-core
+
+scrape_configs:
+  # Метрики самого Prometheus (self-monitoring).
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Метрики Collector'а (:8889) — сюда попадает телеметрия приложений,
+  # транслированная Collector'ом (конвейер собран в T-0.7).
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # Self-метрики Collector'а (:8888): otelcol_receiver_accepted_spans,
+  # otelcol_exporter_sent_spans, отказы memory_limiter и т.п. Нужны, чтобы
+  # отличать «сервисы не шлют телеметрию» от «Collector теряет телеметрию».
+  - job_name: otel-collector-self
+    static_configs:
+      - targets: ["otel-collector:8888"]

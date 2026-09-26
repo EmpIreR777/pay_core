@@ -1,0 +1,21 @@
+apiVersion: 1
+
+datasources:
+  - name: Jaeger
+    # Трейсы. Grafana сам по себе трейсы НЕ хранит — это «окно» в хранилище.
+    # Подключив Jaeger как datasource, получаем:
+    #   * Explore → Jaeger: поиск трейсов прямо в Grafana, без перехода на :16686
+    #   * переход «из графика в трейс»: клик по точке на панели с exemplars
+    #
+    # uid намеренно НЕ задан — Grafana ищет datasource по имени. Явный uid падал
+    # на старте с «data source not found», если в томе grafana.db уже лежит
+    # datasource со старым автосгенерированным uid.
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true
+    jsonData:
+      # Jaeger внутри compose-сети, доступен по DNS-имени контейнера.
+      nodeGraph:
+        # Включаем построение графа сервисов прямо в Grafana.
+        enabled: true

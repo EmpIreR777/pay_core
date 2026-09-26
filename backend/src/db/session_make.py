@@ -3,10 +3,11 @@ from collections.abc import AsyncGenerator
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
+
 from src.core.config import settings
 
 async_engine = create_async_engine(
-    url=settings.SQLALCHEMY_DB_URL,
+    url=settings.DATABASE_URL,
     echo=False,
     future=True,
     pool_pre_ping=True,

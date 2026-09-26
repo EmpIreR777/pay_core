@@ -22,7 +22,8 @@ COPY --from=builder /usr/local /usr/local
 COPY src ./src
 COPY tests ./tests
 COPY entrypoint.sh .
-COPY migrations ./migrations
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 RUN chmod +x /backend/entrypoint.sh
 
