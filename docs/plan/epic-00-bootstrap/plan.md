@@ -47,17 +47,18 @@
 - **DoD:** Тест `test_settings_loads_from_env` проходит.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.4. Линтеры и pre-commit
+### [x] T-0.4. Линтеры и pre-commit
 - **Что сделать:**
   - Настроить ruff, mypy (--strict), pre-commit hooks.
 - **DoD:** `pre-commit run --all-files` зелёный.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.5. Makefile
+### [x] T-0.5. Makefile
 - **Что сделать:**
   - Таргеты: install, lint, test, up, down, migrate, gen-proto, run-api, run-core, run-workers, run-tasks, run-scheduler.
+  - `up`/`down` (docker compose) реализованы в корневом `Makefile` и в `backend/Makefile` намеренно не дублируются.
 - **DoD:** `make test` и `make lint` работают.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.6. docker-compose.yml с инфраструктурой
 - **Что сделать:**
