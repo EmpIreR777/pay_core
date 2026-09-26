@@ -61,6 +61,53 @@ Observability:
     └── adr/
 ```
 
+## 🐳 Локальная инфраструктура (T-0.6)
+
+Вся инфраструктура поднимается одним compose-файлом в **одиночных инстансах**
+(без репликаций), в сети `pay-core-net`:
+
+```bash
+cp .env.example .env   # опционально: свои порты/креды
+make up                # docker compose up -d (файл в корне, -f не нужен)
+make ps                # статус сервисов
+make down              # остановить (данные в volume'ах сохраняются)
+make clean             # полный сброс вместе с томами
+```
+
+Compose-файл лежит в корне (`docker-compose.yml`) намеренно: Docker Compose ищет
+`.env` в каталоге compose-файла, поэтому только из корня `.env` подхватывается
+автоматически. Конфиги самих сервисов остались в `infra/` (prometheus, grafana),
+конфиг Collector'а — в `otel_collector/`.
+
+| Сервис              | Образ                              | UI / Endpoint (хост)         | Внутри сети                |
+|---------------------|------------------------------------|------------------------------|----------------------------|
+| PostgreSQL 16       | `postgres:16-alpine`               | `localhost:5432`             | `postgres:5432`            |
+| Redis 7             | `redis:7-alpine`                   | `localhost:6379`             | `redis:6379`               |
+| Kafka 4 (KRaft)     | `apache/kafka:4.1.2`               | `localhost:9092`             | `kafka:29092` (INTERNAL)   |
+| Kafka UI            | `provectuslabs/kafka-ui:v0.7.2`    | http://localhost:8080        | —                          |
+| OTel Collector      | `otel/opentelemetry-collector-contrib:0.161.0` | OTLP: `localhost:4317` / `:4318` | `otel-collector:4317` |
+| Jaeger (traces)     | `jaegertracing/all-in-one:1.76.0`  | http://localhost:16686       | `jaeger:4317` (OTLP)       |
+| Prometheus (metrics)| `prom/prometheus:v3.15.0`          | http://localhost:9090        | `prometheus:9090`          |
+| Grafana             | `grafana/grafana:13.0.9`           | http://localhost:3000        | `grafana:3000`             |
+
+**Важные детали реализации:**
+
+- **Kafka: три listener'а.** `EXTERNAL://localhost:9092` — для приложений на хосте,
+  `INTERNAL://kafka:29092` — для контейнеров compose, `CONTROLLER` — для KRaft.
+  Разделение обязательно: с одним `advertised listener` клиент внутри сети
+  получает `localhost:9092` в метаданных и не может подключиться.
+- **Jaeger не публикует 4317/4318 на хосте** — эти порты принадлежат Collector'у.
+  Collector отдаёт трейсы в Jaeger по OTLP внутри docker-сети.
+- **Volume Kafka монтируется в `/var/lib/kafka/data`** (а не в `/var/lib/kafka`):
+  образ объявляет `VOLUME /var/lib/kafka/data`, и том в родительском каталоге
+  перекрывается анонимным томом образа — данные теряются при `down`.
+- **Healthcheck'и.** У каждого сервиса есть проверка готовности, а не только
+  «процесс жив», и `depends_on: condition: service_healthy` для зависимостей.
+  У образа OTel Collector (distroless) нет `/bin/sh`, `wget` и `curl`, поэтому
+  его healthcheck — `otelcol-contrib validate`.
+- **Данные переживают `down`/`up`.** Наполнение томов проверено: топики Kafka,
+  данные Postgres и AOF Redis остаются на месте.
+
 ## 🛠️ Стек технологий
 
 - **Язык**: Python 3.12+ (строгая типизация `mypy --strict`)

@@ -1,0 +1,303 @@
+# ==============================================================================
+# T-0.6 — Локальная инфраструктура Payment Gateway (single instance).
+#
+# Запуск:  docker compose up -d          (файл в корне, -f не требуется)
+# Проверка: docker compose ps
+#         docker compose --profile app up -d   # + сервисы приложения (Эпик 6-7)
+#
+# Архитектурные принципы (PLAN.md / AGENT.md):
+#   * Все сервисы — одиночные инстансы, без репликаций.
+#   * Телеметрия приложения идёт ТОЛЬКО в OTel Collector (:4317/:4318).
+#     Collector сам делает fan-out в Jaeger (traces) и Prometheus (metrics).
+#     Приложение не знает о Jaeger/Prometheus напрямую.
+#   * Kafka в одном инстансе: KRaft-контроллер и брокер в одном процессе
+#     (Zookeeper не используется).
+#
+# Файл лежит в корне намеренно: Compose ищет `.env` в каталоге compose-файла,
+# поэтому здесь `.env` из корня репозитория (см. `.env.example`) подхватывается
+# автоматически. Все относительные пути ниже — от корня репозитория.
+# ==============================================================================
+
+name: pay_core
+
+# ------------------------------------------------------------------------------
+# Переиспользуемые куски конфигурации
+# ------------------------------------------------------------------------------
+
+# Общие для всех сервисов настройки: сеть, авторестарт, ротация логов.
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks: [pay-net]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# Kafka использует три listener'а:
+#   INTERNAL   — для других контейнеров compose-сети (kafka:29092)
+#   EXTERNAL   — для приложений, запущенных на хосте (localhost:9092)
+#   CONTROLLER — для KRaft-контроллера (внутри сети, наружу не публикуется)
+# Разделение обязательно: иначе клиент внутри сети получает в метаданных
+# `localhost:9092` и не может подключиться (проверено экспериментально).
+x-kafka-common: &kafka-common
+  <<: *service-defaults
+  image: apache/kafka:4.1.2
+  environment:
+    # --- KRaft (single node: broker + controller в одном процессе) ---
+    KAFKA_NODE_ID: "1"
+    KAFKA_PROCESS_ROLES: broker,controller
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+    # --- Listeners ---
+    KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093
+    KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    # --- Single instance: replication factor = 1 везде ---
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+    KAFKA_DEFAULT_REPLICATION_FACTOR: "1"
+    KAFKA_NUM_PARTITIONS: "3"
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    # --- Хранилище и память ---
+    KAFKA_LOG_DIRS: /var/lib/kafka/data
+    KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+
+
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — основное хранилище платежей
+  # ---------------------------------------------------------------------------
+  postgres:
+    <<: *service-defaults
+    image: postgres:16-alpine
+    container_name: pay-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-pay_core}
+      # Data checksums ловят повреждение страниц на dev-хосте.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready не требует пароля и проверяет готовность кластера принимать
+      # соединения, а не просто «процесс жив» — это нужно для depends_on.
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-pay_core}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — кэш и распределённые блокировки
+  # ---------------------------------------------------------------------------
+  redis:
+    <<: *service-defaults
+    image: redis:7-alpine
+    container_name: pay-redis
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Kafka 4 (KRaft) — брокер событий для Transactional Outbox
+  # ---------------------------------------------------------------------------
+  kafka:
+    <<: *kafka-common
+    container_name: pay-kafka
+    ports:
+      # Публикуем только EXTERNAL-listener (для приложений с хоста).
+      # INTERNAL и CONTROLLER доступны внутри сети pay-net.
+      - "${KAFKA_PORT:-9092}:9092"
+    volumes:
+      # ВАЖНО: монтируем именно в /var/lib/kafka/data, а не в /var/lib/kafka.
+      # Образ apache/kafka объявляет VOLUME /var/lib/kafka/data, поэтому том,
+      # смонтированный в родительский каталог, оказывается ПЕРЕКРЫТ анонимным
+      # томом образа, и данные теряются при `docker compose down`.
+      # Монтирование в тот же путь подменяет анонимный том на наш именованный.
+      # Владелец каталога в образе — appuser (uid 1000), поэтому непривилегированный
+      # Kafka может в него писать (права наследуются при инициализации тома).
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # Проверяем готовность брокера через INTERNAL-listener: подключение к
+      # localhost:9092 изнутри даёт таймаут, т.к. брокер объявит клиенту
+      # EXTERNAL-адрес (localhost:9092 хоста).
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list > /dev/null 2>&1
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Kafka UI — веб-интерфейс для просмотра топиков и consumer groups
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    <<: *service-defaults
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: pay-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: pay-core
+      # Подключаемся по INTERNAL-listenerу (внутри сети compose).
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "false"
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector — единая точка приёма телеметрии (fan-out)
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    <<: *service-defaults
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    container_name: pay-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    depends_on:
+      # Collector экспортирует трейсы в Jaeger по OTLP — ждём готовности Jaeger.
+      jaeger:
+        condition: service_healthy
+    volumes:
+      - ./otel_collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"       # OTLP/gRPC — вход для приложений
+      - "${OTEL_HTTP_PORT:-4318}:4318"       # OTLP/HTTP
+      - "${OTEL_PROMETHEUS_PORT:-8889}:8889" # metrics для scrape Prometheus
+      - "${OTEL_HEALTH_PORT:-13133}:13133"   # health_check extension
+    healthcheck:
+      # Образ distroless: внутри нет /bin/sh, wget и curl. Поэтому здоровье
+      # проверяем единственным доступным способом — валидацией конфига
+      # встроенным бинарником (exit 0 = конфиг валиден, пайплайны подняты).
+      test:
+        - CMD
+        - /otelcol-contrib
+        - validate
+        - --config=file:/etc/otelcol-contrib/config.yaml
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Jaeger all-in-one — хранение и UI трасс (storage: memory)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    <<: *service-defaults
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: pay-jaeger
+    environment:
+      SPAN_STORAGE_TYPE: memory
+      # Jaeger принимает OTLP от Collector по внутренней сети compose.
+      # На хосте порты 4317/4318 НЕ публикуются — они принадлежат Collector'у.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    # Образ объявляет VOLUME /tmp, что создавало бы новый анонимный том на
+    # каждый запуск (и течёт при циклах up/down). Jaeger пишет туда только
+    # временные файлы, поэтому tmpfs функционально эквивалентен и не leaks.
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — сбор метрик (скрейпит экспортёр Collector'а)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v3.15.0
+    container_name: pay-prometheus
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-7d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Grafana — дашборды метрик
+  # ---------------------------------------------------------------------------
+  grafana:
+    <<: *service-defaults
+    image: grafana/grafana:13.0.9
+    container_name: pay-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      # Логин для локальной разработки. Продакшн-значения — только через ENV.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3000}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Datasource Prometheus провижинится автоматически при старте.
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+# ------------------------------------------------------------------------------
+# Сеть и тома
+# ------------------------------------------------------------------------------
+networks:
+  pay-net:
+    name: pay-core-net
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:

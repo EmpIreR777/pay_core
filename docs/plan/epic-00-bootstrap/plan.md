@@ -60,11 +60,11 @@
 - **DoD:** `make test` и `make lint` работают.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.6. docker-compose.yml с инфраструктурой
+### [x] T-0.6. docker-compose.yml с инфраструктурой
 - **Что сделать:**
   - Запустить одиночные инстансы: postgres:16, redis:7, kafka (KRaft) + kafka-ui, otel-collector, jaeger:all-in-one, prometheus, grafana.
-- **DoD:** `docker compose -f infra/docker-compose.yml up -d`, все сервисы healthy.
-- **Подтверждение пользователя:** `[ ]`
+- **DoD:** `docker compose up -d` (compose-файл в корне), все сервисы healthy.
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.7. OTel Collector — конфиг
 - **Что сделать:**

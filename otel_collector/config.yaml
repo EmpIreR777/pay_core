@@ -1,0 +1,46 @@
+# ==============================================================================
+# OTel Collector — конфигурация.
+#
+# ВНИМАНИЕ: это bootstrap-конфиг для Эпика 0, задача T-0.6.
+# Он поднимает Collector так, чтобы инфраструктура (T-0.6) стартовала
+# и проходила healthcheck. Полноценный конвейер телеметрии
+# (processors: memory_limiter/batch/resource, exporters: otlp/jaeger + prometheus
+# :8889, pipelines traces+metrics) — задача T-0.7.
+#
+# Архитектурный принцип: приложение шлёт OTLP только в Collector (:4317/:4318),
+# а Collector уже сам fan-out'ит телеметрию в Jaeger и Prometheus.
+# Приложение НЕ знает о Jaeger/Prometheus напрямую.
+# ==============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+extensions:
+  # Health-endpoint для Docker healthcheck (внутри контейнера нет wget/curl,
+  # поэтому сам healthcheck выполняется через `otelcol-contrib validate`).
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+exporters:
+  # Временный exporter: держит пайплайны валидными на этапе bootstrap.
+  # В T-0.7 будет заменён на otlp/jaeger + prometheus (см. PLAN.md).
+  debug:
+    verbosity: basic
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
