@@ -37,21 +37,25 @@ Observability:
 
 ```text
 .
+├── backend/                 # Единый бэкенд проект на uv
+│   ├── src/
+│   │   ├── api_gateway/     # FastAPI BFF (тонкий шлюз, 1 инстанс)
+│   │   ├── core_service/    # Core Service (DDD, gRPC сервер, 1 инстанс)
+│   │   ├── workers/         # FastStream фоновые воркеры (Kafka consumers, 1 инстанс)
+│   │   └── tasks/           # Taskiq worker & scheduler (периодические и отложенные задачи)
+│   ├── alembic/             # Миграции базы данных PostgreSQL
+│   ├── tests/               # Пирамида тестов (unit, integration, e2e)
+│   │   ├── unit/
+│   │   ├── integration/
+│   │   └── e2e/
+│   ├── pyproject.toml       # Зависимости и конфигурация uv, ruff, mypy, pytest
+│   └── uv.lock              # Lock-файл зависимостей uv
 ├── proto/payments/v1/       # Protobuf контракты gRPC
-├── api_gateway/             # FastAPI BFF (тонкий шлюз, 1 инстанс)
-├── core_service/            # Core Service (DDD, бизнес-логика, 1 инстанс)
-├── workers/                 # FastStream фоновые воркеры (Kafka consumers, 1 инстанс)
-├── tasks/                   # Taskiq worker & scheduler (периодические и отложенные задачи)
 ├── otel_collector/          # Конфигурация OpenTelemetry Collector
-├── tests/                   # Пирамида тестов (unit, integration, e2e)
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
 ├── infra/                   # Инфраструктурные сервисы (Prometheus, Grafana, Jaeger)
 │   ├── prometheus/
 │   ├── grafana/
 │   └── jaeger/
-├── alembic/                 # Миграции базы данных PostgreSQL
 └── docs/                    # Документация проекта, планы эпиков и ADR
     ├── plan/
     └── adr/
