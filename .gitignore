@@ -1,0 +1,44 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.idea
+**/.DS_Store
+backend/storage/*
+
+# Env files
+.env
+.env.dev
+.env.prod
+
+
+# Caches & tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage/
+htmlcov/
+.cache/
+
+# Editor/IDE
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Frontend
+frontend/node_modules/
+node_modules/
+
+# Logs
+*.log
+logs/
+
+
+storage/

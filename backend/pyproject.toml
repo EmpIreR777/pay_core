@@ -1,0 +1,124 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Бэкенд сервис для оплаты."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.18.4",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.135.3",
+    "greenlet>=3.5.3",
+    "psycopg2-binary>=2.9.12",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.14.2",
+    "python-multipart>=0.0.20",
+    "sqlalchemy>=2.0.48",
+    "sqlalchemy-utils>=0.41.1",
+    "uvicorn>=0.42.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=7.4.2",
+    "pytest-asyncio>=0.22.0",
+    "pytest-cov>=5.3.1",
+]
+lint = [
+    "mypy>=1.17.1",
+    "pre-commit>=4.2.0",
+    "ruff>=0.12.7",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+cache-dir = ".ruff_cache"
+exclude = [
+    "tests/",
+]
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ANN",
+    "ARG",
+    "B",
+    "C4",
+    "COM",
+    "E",
+    "F",
+    "I",
+    "N",
+    "PT",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "UP",
+    "W",
+]
+ignore = [
+    "ANN003",
+    "ANN401",
+    "ARG001",
+    "ARG005",
+    "B008",
+    "B904",
+    "COM812",
+    "RUF002",
+    "RUF012",
+    "S101",
+]
+allowed-confusables = ["с", "е", "Н", "о"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/*" = [
+    "E402",
+    "F401",
+]
+"tests/*" = [
+    "ANN",
+    "S101",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+mypy_path = ["$MYPY_CONFIG_FILE_DIR"]
+cache_dir = "$MYPY_CONFIG_FILE_DIR/.mypy_cache"
+explicit_package_bases = true
+strict = true
+disallow_untyped_decorators = false
+plugins = ["pydantic.mypy"]
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unreachable = true
+python_version = "3.14"
+exclude = [
+    "tests/",
+    "migrations/",
+    "storage/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "aiofiles",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "celery",
+]
+ignore_missing_imports = true
+
+[tool.codespell]
+ignore-words-list = "selectin,ot"
