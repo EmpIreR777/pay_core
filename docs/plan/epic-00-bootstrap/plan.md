@@ -1,7 +1,7 @@
 # ЭПИК 0: Bootstrap репозитория
 
-> **Статус эпика:** `[ ] TODO`
-> **Подтверждение пользователя:** `[ ] Подтверждено`
+> **Статус эпика:** `[x] DONE`
+> **Подтверждение пользователя:** `[x] Подтверждено`
 
 ## Цель
 Создать рабочий скелет проекта, базовую инфраструктуру (Postgres, Redis, Kafka, OTel Collector, Jaeger, Prometheus, Grafana), линтеры, конфиги и сквозную проверку OTel Collector.
@@ -72,9 +72,62 @@
 - **DoD:** Collector стартует, принимает OTLP и отдаёт метрики для scrape.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.8. Проверка Collector end-to-end
+### [x] T-0.8. Проверка Collector end-to-end
 - **Что сделать:**
   - Минимальное Python-приложение с OTel SDK шлёт тестовый span и metric на Collector (:4317).
   - Проверить появление трейса в Jaeger UI и метрики в Prometheus UI.
 - **DoD:** В Jaeger виден span, в Prometheus видна метрика.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Что сделано:**
+  - `backend/scripts/otel_smoke.py` — зонд на OTel SDK: `TracerProvider` + `MeterProvider` +
+    `LoggerProvider` с OTLP/gRPC-экспортёрами на `OTEL_EXPORTER_OTLP_ENDPOINT`.
+    Шлёт root-span `paycore.otel_smoke.probe` с потомком, counter
+    `paycore_smoke_probe_count`, histogram `paycore_smoke_probe_duration` и OTLP log-запись.
+    Перед выходом — `force_flush()` + `shutdown()` провайдеров, иначе батчи теряются.
+  - Таргеты: `make otel-smoke` в `backend/Makefile` и в корневом `Makefile`.
+  - `backend/tests/integration/test_otel_smoke.py` — 5 интеграционных тестов: health Collector'а,
+    трейс в Jaeger по `trace_id`, метрика на `:8889`, метрика в Prometheus после scrape,
+    self-метрика `otelcol_exporter_sent_spans`. Ожидание — polling с таймаутом, без `sleep`.
+    Авто-skip, если стенд не поднят (фикстура `observability_stack` в conftest).
+  - `backend/tests/unit/test_otel_smoke.py` — юнит-тесты разбора OTLP endpoint (без сети).
+  - `mypy --strict` теперь покрывает и `scripts/`; в `pyproject.toml` добавлен маркер
+    `integration`, секция `[tool.pytest.ini_options]` и полный список кириллицы в
+    `allowed-confusables` (RUF001/002/003 иначе ругаются на русские комментарии).
+  - README: раздел «✅ Сквозная проверка Collector» с таблицей адресов для ручной проверки.
+- **Исправления, найденные при ручной проверке:**
+  - `otel_collector/config.yaml`: задано `metric_expiration: 1h` (дефолт бинаря `5m`).
+    Причина «белого экрана» на `:8889` и пустых графиков: серия удалялась через 5 минут
+    после последнего прогона одноразового зонда. Значение вынесено в ENV
+    `OTEL_COLLECTOR_METRIC_EXPIRATION` (прод оставляет дефолтным).
+  - `infra/grafana/provisioning/dashboards/` — дашборд `otel-overview.json` (11 панелей) +
+    провайдер `dashboards.yml`. Раньше дашбордов не было вовсе, поэтому Grafana
+    показывала пустоту. Панели ссылаются на datasource через переменную `${datasource}`;
+    в `datasources/prometheus.yml` добавлен `httpMethod: POST` для длинных PromQL.
+  - `infra/grafana/provisioning/datasources/jaeger.yml` — Jaeger подключён в Grafana вторым
+    datasource: Grafana сама трейсы не хранит, но с этим datasource появляется
+    `Explore -> Jaeger` (поиск трейсов без перехода на :16686). Проверено:
+    `POST /api/datasources/uid/<jaeger>/health` -> `{"status":"OK"}`.
+    uid намеренно не задан: Grafana ищет datasource по имени, а явный uid роняет
+    провижининг на существующем томе grafana.db.
+  - Панель памяти в `otel-overview.json` переделана: вместо одной плитки `RSS`
+    график на две линии — `heap_alloc` (реально занято, ~32 МБ) и `memory_rss`
+    (удерживается процессом, ~217 МБ) + пунктир лимита `memory_limiter` (384 МиБ).
+    Причина: `RSS` у Go всегда выше `heap` (блоки у ОС не возвращаются), из-за чего
+    плитка выглядела как «память почти на пределе». Утечки нет: 20 прогонов зонда
+    дали `heap` 25.4 -> 30.5 МБ (сработал GC) при неизменном `RSS` 210 МБ.
+- **Фактический результат проверки (прогон выполнен):**
+  - Jaeger `http://localhost:16686`: сервис `paycore-otel-smoke`, трейс из 2 span'ов
+    (root + child, `CHILD_OF`-связь), `service.namespace=pay-core`, `deployment.environment=local`.
+  - Collector `:8889/metrics`: `paycore_smoke_probe_count_total` (counter) и
+    `paycore_smoke_probe_duration_milliseconds` (histogram) с лейблами
+    `service_namespace`, `service_version`, `deployment_environment`.
+  - Prometheus `http://localhost:9090`: серия `paycore_smoke_probe_count_total` видна в UI.
+  - Collector `:8888/metrics`: `otelcol_exporter_sent_spans{exporter="otlp_grpc/jaeger"}` растёт,
+    `otelcol_receiver_accepted_log_records` > 0 (logs-пайплайн тоже работает).
+  - Grafana `http://localhost:3000/d/paycore-otel-overview`: 11 панелей отдают данные.
+  - `make lint` и `make test` (16 тестов) — зелёные; `pre-commit run --all-files` — зелёный.
+- **Известное ограничение:** переход «из графика в трейс» (exemplars) не работает —
+  `enable_open_metrics: true` в конфиге есть, но `/api/v1/query_exemplars` возвращает
+  пусто. Поиск трейсов через `Explore -> Jaeger` при этом работает. Причина, вероятно,
+  в том, что одноразовый зонд пишет метрику один раз и умирает до скрейпа Prometheus.
+  Вынесено в бэклог отдельной задачей.

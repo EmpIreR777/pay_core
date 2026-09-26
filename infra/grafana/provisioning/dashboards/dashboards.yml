@@ -1,0 +1,31 @@
+# ==============================================================================
+# Grafana — автозагрузка дашбордов из репозитория (T-0.8).
+#
+# Зачем этот файл: без него Grafana поднимается с НУЛЕМ дашбордов. Пользователь
+# открывает http://localhost:3000, видит пустоту и решает, что «ничего не
+# работает» — хотя под капотом всё живо. Этот провайдер заставляет Grafana при
+# старте (и далее раз в updateIntervalSeconds) читать все *.json из папки
+# dashboards/ и показывать их в разделе Dashboards.
+#
+# Путь ВНУТРИ контейнера: docker-compose монтирует
+# ./infra/grafana/provisioning → /etc/grafana/provisioning, поэтому JSON-дашборды
+# кладём в ./infra/grafana/provisioning/dashboards/.
+#
+# allowUiUpdates: true — панель можно поправить в UI и сохранить; правки переживут
+# рестарт контейнера, пока цел том grafana-data.
+# ==============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: pay-core
+    orgId: 1
+    folder: Pay Core
+    type: file
+    disableDeletion: false
+    # Как часто Grafana перечитывает папку с JSON (в секундах).
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -2,14 +2,18 @@
 # Grafana — provisioning datasources.
 #
 # Источник данных — Prometheus, который скрейпит метрики OTel Collector'а.
-# Дашборды НЕ поставляются: на этапе Эпика 0 достаточно подключённого
-# datasource, сами дашборды появятся вместе с метриками приложения.
+# Дашборды поставляются отдельно: provisioning/dashboards/dashboards.yml
+# + infra/grafana/dashboards/*.json
 # ==============================================================================
 
 apiVersion: 1
 
 datasources:
   - name: Prometheus
+    # uid намеренно НЕ задан. Grafana ищет datasource по имени, а в томе
+    # grafana.db уже лежит datasource со старым автосгенерированным uid; при
+    # попытке задать свой uid Grafana падает на старте с «data source not found».
+    # Дашборд берёт источник из переменной ${datasource}, жёсткий uid не нужен.
     type: prometheus
     access: proxy
     url: http://prometheus:9090
@@ -18,3 +22,4 @@ datasources:
     jsonData:
       # Интервал соответствует scrape_interval из prometheus.yml.
       timeInterval: 15s
+      httpMethod: POST

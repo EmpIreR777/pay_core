@@ -172,6 +172,110 @@ curl -sS http://localhost:8888/metrics | grep otelcol_exporter_sent_spans
 > использование старого имени валит конфиг с ошибкой запуска. Всегда сверяйтесь
 > с `otelcol-contrib components` под нужную версию образа.
 
+## ✅ Сквозная проверка Collector (T-0.8)
+
+Конфиг Collector'а (T-0.7) проверен не только на валидность, но и **сквозным
+прогоном**: приложение с OTel SDK отправляет тестовые `span`, `metric` и
+`log` на `:4317`, и мы убеждаемся, что они доехали до Jaeger и Prometheus.
+
+### Ручной прогон
+
+```bash
+make up                                   # поднять стенд (если ещё не поднят)
+cd backend && make otel-smoke              # отправить тестовую телеметрию
+```
+
+Скрипт [`backend/scripts/otel_smoke.py`](backend/scripts/otel_smoke.py) создаёт
+`TracerProvider` + `MeterProvider` + `LoggerProvider` с OTLP/gRPC-экспортёрами
+на адрес из `OTEL_EXPORTER_OTLP_ENDPOINT` и шлёт:
+
+| Что | Имя | Куда попадает |
+|-----|-----|----------------|
+| Корневой span | `paycore.otel_smoke.probe` | Jaeger |
+| Дочерний span | `paycore.otel_smoke.probe.child` | Jaeger (проверка иерархии) |
+| Counter | `paycore_smoke_probe_count` | Prometheus (`..._count_total`) |
+| Histogram | `paycore_smoke_probe_duration` | Prometheus (`..._milliseconds`) |
+| Log record | `paycore otel smoke probe log record` | stdout Collector'а (`debug`) |
+
+После прогона печатается `trace_id` и готовые ссылки для ручной проверки.
+
+> Метрики пишутся **внутри** активного span'а, поэтому Collector приклеивает
+> к ним `exemplar` со ссылкой на трейс — это и есть переход «из графика в трейс».
+
+### Что и где смотреть
+
+| Проверка | Адрес | Что искать |
+|----------|-------|------------|
+| **Трейсы** | http://localhost:16686 | Service `paycore-otel-smoke` → 2 span'а |
+| **Трейс по ID** | http://localhost:16686/trace/`<trace_id>` | Детали конкретного прогона |
+| **Метрики (до scrape)** | http://localhost:8889/metrics | `paycore_smoke_probe_count_total` |
+| **Метрики в Prometheus** | http://localhost:9090 | `paycore_smoke_probe_count_total` |
+| **Дашборд Grafana** | http://localhost:3000/d/paycore-otel-overview | Графики без ручного ввода запросов |
+| **Explore → Jaeger** | http://localhost:3000/explore | Поиск трейсов прямо в Grafana |
+| **Self-метрики Collector'а** | http://localhost:8888/metrics | `otelcol_exporter_sent_spans{exporter="otlp_grpc/jaeger"}` |
+| **Health Collector'а** | http://localhost:13133 | `{"status": "Server available"}` |
+| **Логи Collector'а** | `docker logs -f pay-otel-collector` | Запись `paycore otel smoke probe log record` |
+| **Targets Prometheus** | http://localhost:9090/targets | Job `otel-collector` → `up` |
+
+### Автоматическая проверка
+
+```bash
+cd backend
+make test-integration   # 5 интеграционных тестов T-0.8
+make test               # unit + integration
+```
+
+Тесты ждут появления телеметрии **polling'ом с явным таймаутом** (никаких
+`sleep` «наугад»): трейс — в Jaeger по `trace_id`, метрика — в экспортёре
+Collector'а и в Prometheus после `scrape_interval` (15s).
+
+Если стенд не поднят, интеграционные тесты **пропускаются** (skip) с понятным
+сообщением, а не падают — `make test` остаётся зелёным без Docker.
+
+### Дашборд Grafana
+
+Файл [`infra/grafana/provisioning/dashboards/otel-overview.json`](infra/grafana/provisioning/dashboards/otel-overview.json)
+подхватывается при старте Grafana (провайдер описан в `dashboards.yml` рядом).
+Открывать: **http://localhost:3000/d/paycore-otel-overview**
+
+| Панель | Что показывает |
+|--------|----------------|
+| Прогоны зонда (counter) | Сколько раз запускали `make otel-smoke` — растёт ступеньками |
+| Скорость прогонов | `rate(...)` — активен ли зонд прямо сейчас |
+| Принято vs отправлено (spans) | Принял Collector на `:4317` → отправил в Jaeger. Расхождение = потери |
+| Принято vs отправлено (metrics) | То же для метрик: receiver → экспортёр на `:8889` |
+| Uptime / Память / Очередь | Здоровье Collector'а с цветовыми порогами |
+
+Панели ссылаются на datasource через переменную `${datasource}`, поэтому
+привязываются к Prometheus автоматически.
+
+### Grafana как единое окно: метрики + трейсы
+
+Grafana сама трейсы **не хранит** — это «окно» в хранилища. Поэтому в Grafana
+провижинятся **два** источника:
+
+| Datasource | Что хранит | Что даёт в Grafana |
+|------------|------------|--------------------|
+| `Prometheus` | метрики | все панели дашборда + self-метрики Collector'а |
+| `Jaeger` | трейсы | **Explore → Jaeger**: поиск трейсов без перехода на :16686 |
+
+Файлы: `infra/grafana/provisioning/datasources/prometheus.yml` и `.../jaeger.yml`.
+
+### Почему метрика «исчезает» через несколько минут
+
+У prometheus-экспортёра Collector'а есть параметр `metric_expiration` — сколько
+он **держит** метрику после последнего обновления. Дефолт бинаря — `5m`: через
+пять минут молчания серия удаляется с `:8889`, Prometheus помечает её stale, и
+график становится пустым.
+
+Наш зонд одноразовый (отправил — и процесс завершился), поэтому на dev это
+выглядело как «всё сломалось». В конфиге выставлено `metric_expiration: 1h`
+(через ENV `OTEL_COLLECTOR_METRIC_EXPIRATION`): окно достаточно большое, чтобы
+спокойно открыть Grafana и посмотреть график.
+
+**Прод-значение** оставляем дефолтным: там метрики шлёт живой сервис постоянно,
+и протухание серии = сигнал алерта, а не особенность одноразового зонда.
+
 ## 🛠️ Стек технологий
 
 - **Язык**: Python 3.12+ (строгая типизация `mypy --strict`)

@@ -44,6 +44,6 @@ repos:
     hooks:
       - id: mypy
         files: ^backend/
-        entry: sh -c 'if [ -d backend ]; then cd backend; fi && uv run mypy src --strict --config-file pyproject.toml --cache-dir .mypy_cache'
+        entry: sh -c 'if [ -d backend ]; then cd backend; fi && uv run mypy src scripts --strict --config-file pyproject.toml --cache-dir .mypy_cache'
         language: system
         pass_filenames: false

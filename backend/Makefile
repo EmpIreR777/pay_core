@@ -6,9 +6,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint format pre-commit pre-commit-install \
-        test test-cov \
+        test test-cov test-unit test-integration \
         migrate alembic-rev alembic-down \
-        gen-proto run-api run-core run-workers run-tasks run-scheduler \
+        gen-proto run-api run-core run-workers run-tasks run-scheduler otel-smoke \
         clean-cache
 
 # ------------------------------------------------------------------------------
@@ -30,7 +30,7 @@ install: ## Установить зависимости (uv sync --all-groups)
 lint: ## ruff check + ruff format --check + mypy --strict
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy src --strict --config-file pyproject.toml
+	uv run mypy src scripts --strict --config-file pyproject.toml
 
 format: ## Автоформатирование (ruff check --fix + ruff format)
 	uv run ruff check --fix .
@@ -45,8 +45,14 @@ pre-commit-install: ## Установить pre-commit hook в .git/hooks
 # ------------------------------------------------------------------------------
 # Tests
 # ------------------------------------------------------------------------------
-test: ## Запустить тесты (pytest)
+test: ## Запустить все тесты (unit + integration)
 	uv run pytest
+
+test-unit: ## Запустить только быстрые unit-тесты (без стенда)
+	uv run pytest tests/unit
+
+test-integration: ## Запустить интеграционные тесты (нужен поднятый стенд: make up)
+	uv run pytest tests/integration -m integration
 
 test-cov: ## Запустить тесты с отчётом покрытия
 	uv run pytest --cov=src --cov-report=term-missing
@@ -91,6 +97,13 @@ run-tasks: ## Taskiq worker
 
 run-scheduler: ## Taskiq scheduler
 	uv run taskiq scheduler src.tasks.scheduler:scheduler src.tasks.tasks
+
+# ------------------------------------------------------------------------------
+# Observability
+# ------------------------------------------------------------------------------
+
+otel-smoke: ## Отправить тестовые span/metric/log в OTel Collector (T-0.8)
+	uv run python -m scripts.otel_smoke
 
 # ------------------------------------------------------------------------------
 # Maintenance
