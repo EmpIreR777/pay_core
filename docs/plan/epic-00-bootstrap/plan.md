@@ -29,17 +29,16 @@
 - **DoD:** Структура папок оформлена, git репозиторий готов.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.2. pyproject.toml + зависимости
+### [x] T-0.2. pyproject.toml + зависимости
 - **Что сделать:**
   - Настроить `uv` в `backend/pyproject.toml`.
   - Зависимости:
-    - `core`: pydantic, pydantic-settings, sqlalchemy[asyncio], asyncpg, alembic, redis, faststream[kafka], grpcio, grpcio-tools, opentelemetry-*, structlog
+    - `core`: pydantic, pydantic-settings, sqlalchemy[asyncio], asyncpg, alembic, redis, faststream[kafka], grpcio, grpcio-tools, grpcio-reflection, opentelemetry-*, structlog
     - `api`: fastapi, uvicorn, httpx, python-jose
-    - `tasks`: taskiq, taskiq-kafka (или taskiq-aio-pika), taskiq-scheduler
-    - `payment`: yookassa (в extras: `uv sync --extra yookassa`)
-    - `dev`: pytest, pytest-asyncio, testcontainers, ruff, mypy, pre-commit
+    - `tasks`: taskiq, taskiq-redis, taskiq-faststream
+    - `dev`: pytest, pytest-asyncio, pytest-cov, respx, testcontainers, ruff, mypy, pre-commit
 - **DoD:** `uv sync` в `backend/` проходит успешно.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.3. Конфиг через pydantic-settings
 - **Что сделать:**
