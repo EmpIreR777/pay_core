@@ -1,6 +1,6 @@
 # ЭПИК 0: Bootstrap репозитория
 
-> **Статус эпика:** `[ ] TODO`  
+> **Статус эпика:** `[ ] TODO`
 > **Подтверждение пользователя:** `[ ] Подтверждено`
 
 ## Цель
@@ -40,12 +40,12 @@
 - **DoD:** `uv sync` в `backend/` проходит успешно.
 - **Подтверждение пользователя:** `[x]` (подтверждено)
 
-### [ ] T-0.3. Конфиг через pydantic-settings
+### [x] T-0.3. Конфиг через pydantic-settings
 - **Что сделать:**
   - Реализовать единый `Settings`. Поля: DATABASE_URL, REDIS_URL, KAFKA_BOOTSTRAP, GRPC_PORT, HTTP_PORT, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, JWT_SECRET, PAYMENT_PROVIDER (fake | yookassa), YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY.
   - Написать тест `test_settings_loads_from_env`.
 - **DoD:** Тест `test_settings_loads_from_env` проходит.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
 
 ### [ ] T-0.4. Линтеры и pre-commit
 - **Что сделать:**
