@@ -1,46 +1,157 @@
 # ==============================================================================
-# OTel Collector — конфигурация.
+# OTel Collector — конфигурация приёма и fan-out телеметрии (T-0.7).
 #
-# ВНИМАНИЕ: это bootstrap-конфиг для Эпика 0, задача T-0.6.
-# Он поднимает Collector так, чтобы инфраструктура (T-0.6) стартовала
-# и проходила healthcheck. Полноценный конвейер телеметрии
-# (processors: memory_limiter/batch/resource, exporters: otlp/jaeger + prometheus
-# :8889, pipelines traces+metrics) — задача T-0.7.
-#
-# Архитектурный принцип: приложение шлёт OTLP только в Collector (:4317/:4318),
-# а Collector уже сам fan-out'ит телеметрию в Jaeger и Prometheus.
+# Архитектурный принцип (PLAN.md / AGENT.md): приложение шлёт ВСЮ телеметрию
+# только в Collector по OTLP (:4317/:4318), а Collector сам делает fan-out:
+#     traces  -> otlp_grpc/jaeger  -> jaeger:4317   -> Jaeger UI (:16686)
+#     metrics -> prometheus        -> 0.0.0.0:8889 -> Prometheus scrape (:9090)
+#     logs    -> debug             -> stdout контейнера (Loki подключим позже)
 # Приложение НЕ знает о Jaeger/Prometheus напрямую.
+#
+# ВЕРСИЯ КОМПОНЕНТОВ
+# Образ: otel/opentelemetry-collector-contrib:0.161.0 (см. docker-compose.yml).
+# В contrib >= 0.12x OTLP-exporter разделён на ДВА компонента с разными
+# транспортами: `otlp_grpc` (module otlpexporter) и `otlp_http`
+# (module otlphttpexporter). Старое имя `otlp` в 0.161.0 уже не существует,
+# поэтому ниже используется `otlp_grpc/jaeger`. Проверено через
+# `otelcol-contrib components` (см. README, раздел «Верификация конфига»).
 # ==============================================================================
 
 receivers:
+  # Единственная точка входа для телеметрии приложений — OTLP.
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        # Стандартный лимит OTLP/gRPC — 4 MiB. Поднимаем до 16 MiB, чтобы
+        # большие батчи (например, экспорт сага в Kafka-очереди, T-9.x)
+        # не отбрасывались с UNAVAILABLE/RESOURCE_EXHAUSTED.
+        max_recv_msg_size_mib: 16
       http:
         endpoint: 0.0.0.0:4318
 
-extensions:
-  # Health-endpoint для Docker healthcheck (внутри контейнера нет wget/curl,
-  # поэтому сам healthcheck выполняется через `otelcol-contrib validate`).
-  health_check:
-    endpoint: 0.0.0.0:13133
+processors:
+  # --- memory_limiter ------------------------------------------------------
+  # ОБЯЗАТЕЛЬНО идёт ПЕРВЫМ в каждом пайплайне: это backpressure-клапан,
+  # который не даёт Collector'у упасть по OOM при всплеске трафика.
+  # Значения берутся из ENV с дефолтами, чтобы контейнер можно было
+  # пережать лимитом памяти без правки этого файла (docker-compose).
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: ${env:OTEL_COLLECTOR_MEMORY_LIMIT_MIB:-384}
+    spike_limit_mib: ${env:OTEL_COLLECTOR_MEMORY_SPIKE_LIMIT_MIB:-96}
+
+  # --- resource ------------------------------------------------------------
+  # Нормализует resource-атрибуты телеметрии: приложения присылают разные
+  # значения service.name, а нам в Jaeger/Prometheus нужен единый namespace
+  # и окружение. action: upsert — не затирает то, что приложение уже задало
+  # осмысленно (например, service.version), но добивает отсутствующее.
+  resource:
+    attributes:
+      # Совпадает с project=pay-core в external_labels Prometheus'а.
+      - key: service.namespace
+        value: pay-core
+        action: upsert
+      # Значение по умолчанию local — на dev совпадает с external_labels
+      # Prometheus (env=local), поэтому метрики корректно склеиваются.
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT:-local}
+        action: upsert
+
+  # --- batch ---------------------------------------------------------------
+  # Идёт ПОСЛЕДНИМ: собирает мелкие батчи в крупные перед отправкой.
+  # Экономит соединения и не даёт Jaeger/Prometheus получать по одному span'у.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
 
 exporters:
-  # Временный exporter: держит пайплайны валидными на этапе bootstrap.
-  # В T-0.7 будет заменён на otlp/jaeger + prometheus (см. PLAN.md).
+  # --- traces: fan-out в Jaeger по OTLP/gRPC (внутри docker-сети) ----------
+  # TLS выключен: связь идёт по внутренней сети pay-core-net.
+  # Очередь + ретраи обязательны: Jaeger может перезапускаться, а трейсы
+  # терять нельзя — экспортёр копит их в памяти и досылает после рестарта.
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2048
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      # Потолок суммарного времени ретраев: после него экспортёр сдаётся,
+      # чтобы не копить бесконечную очередь при долгой недоступности Jaeger.
+      max_elapsed_time: 60s
+
+  # --- metrics: pull-экспортёр для Prometheus ------------------------------
+  # Prometheus СКРЕЙПИТ этот порт (job otel-collector, см. infra/prometheus).
+  # Приложение при этом метрики наружу не отдаёт — только Collector.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # OpenMetrics-формат: нужны exemplars (ссылки из метрики на трейс) —
+    # без них переход «из графика в trace» в Grafana невозможен.
+    enable_open_metrics: true
+    # Resource-атрибуты (service.*, deployment.*) превращаются в лейблы
+    # таймсерий. Без этого метрики всех сервисов сливаются в одну, и в
+    # Grafana невозможно разрезать график по сервисам.
+    #
+    # ВАЖНО: в contrib 0.161.0 опция `resource_to_telemetry_conversion`
+    # ОБЪЯВЛЕНА DEPRECATED (Collector пишет warn при старте). Актуальная
+    # замена — `resource_constant_labels` со списками included/excluded.
+    resource_constant_labels:
+      included:
+        - service.*
+        - deployment.*
+      excluded:
+        # service.name и service.instance.id Prometheus уже маппит в
+        # лейблы job и instance. Дублируем их ещё раз = лишняя
+        # кардинальность серий без пользы.
+        - service.name
+        - service.instance.id
+
+  # --- logs: пока только в stdout ------------------------------------------
+  # Канал логов приложений по OTLP заведён заранее, чтобы не менять
+  # пайплайны, когда в Эпике 12 подключим Loki-экспортёр вместо debug.
   debug:
     verbosity: basic
+
+extensions:
+  # Health-endpoint для внешних проверок и для будущего Compose healthcheck.
+  health_check:
+    endpoint: 0.0.0.0:13133
 
 service:
   extensions: [health_check]
   telemetry:
     logs:
       level: info
+    metrics:
+      # Self-observability Collector'а: сколько span'ов/точек принято и
+      # отправлено. Публикуются на :8888 (внутренний порт Collector'а),
+      # НЕ путать с :8889 — это телеметрия приложений.
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [debug]
+      # Порядок процессоров важен: сначала клапан памяти, потом нормализация
+      # атрибутов, в конце — батчинг перед сетью.
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_grpc/jaeger]
     metrics:
       receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
       exporters: [debug]

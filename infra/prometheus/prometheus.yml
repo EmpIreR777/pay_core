@@ -21,8 +21,15 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Метрики OTel Collector (:8889) — сюда попадает телеметрия приложений,
-  # транслированная Collector'ом (ветки приложения появятся в T-0.7).
+  # Метрики Collector'а (:8889) — сюда попадает телеметрия приложений,
+  # транслированная Collector'ом (конвейер собран в T-0.7).
   - job_name: otel-collector
     static_configs:
       - targets: ["otel-collector:8889"]
+
+  # Self-метрики Collector'а (:8888): otelcol_receiver_accepted_spans,
+  # otelcol_exporter_sent_spans, отказы memory_limiter и т.п. Нужны, чтобы
+  # отличать «сервисы не шлют телеметрию» от «Collector теряет телеметрию».
+  - job_name: otel-collector-self
+    static_configs:
+      - targets: ["otel-collector:8888"]
