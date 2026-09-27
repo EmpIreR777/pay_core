@@ -11,10 +11,40 @@
 
 ## Задачи эпика
 
-### [ ] T-2.1. Порты
+### [x] T-2.1. Порты
 - **Что сделать:** Создать Protocol интерфейсы: AccountRepository, PaymentRepository, UnitOfWork, LockManager, IdempotencyStore, EventPublisher, PaymentProvider, Clock.
 - **DoD:** `mypy --strict` успешен.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `application/ports/` — контракты инфраструктуры как `typing.Protocol` + `@runtime_checkable`. Реализациям
+    не нужно наследоваться от портов: достаточно совпасть по «форме» (structural typing), что и проверяют тесты.
+  - `ports/clock.py` — `Clock.now()` (синхронный: чтение времени не требует `await`, в тестах время замораживается).
+  - `ports/account_repository.py` — `AccountRepository`: `get`, `get_for_update` (`SELECT ... FOR UPDATE`,
+    блокировка строки до конца транзакции), `add`, `update`. Коммит репозитории не делают — это граница `UnitOfWork`.
+  - `ports/payment_repository.py` — `PaymentRepository`: `get`, `get_by_provider_payment_id` (для вебхуков),
+    `add`, `update`, `find_by_status(status, *, limit, updated_before)` (выборка «зависших» платежей для сверки).
+  - `ports/unit_of_work.py` — `UnitOfWork`: `accounts`/`payments` (property) + `__aenter__`/`__aexit__`/`commit`/`rollback`
+    (`__aenter__ -> Self`). Транзакционная граница, чтобы баланс + платёж + outbox фиксировались атомарно.
+  - `ports/lock_manager.py` — `LockManager` (`lock` → `AbstractAsyncContextManager[DistributedLock]`, `acquire`, `release`)
+    и `DistributedLock` (`resource`, `token`, `is_held`, `release`, `__aenter__`/`__aexit__`). `lock` синхронный —
+    он лишь возвращает контекстный менеджер, захват происходит в `__aenter__`.
+  - `ports/idempotency_store.py` — `IdempotencyStore` (`get`, `save`, `try_acquire` = `SET NX`, `release`) и
+    `IdempotencyRecord` (`frozen`-dataclass; `request_hash` ловит конфликт «тот же ключ, другое тело»).
+  - `ports/event_publisher.py` — `EventPublisher.publish(DomainEvent)` — абстракция outbox.
+  - `ports/payment_provider.py` — `PaymentProvider` (`create_payment(*, payment_id, amount, idempotency_key)`,
+    `get_status`, `refund`), `ProviderResult`, `ProviderStatus` (отдельная шкала статусов провайдера).
+  - `application/__init__.py`, `ports/__init__.py` — реэкспорт портов наружу слоя.
+  - `tests/unit/application/test_ports.py` — 60 архитектурных (contract) тестов: `_is_protocol` / `_is_runtime_protocol`,
+    наличие и `async`-ность методов (`inspect.iscoroutinefunction`), `property` (`inspect.getattr_static`),
+    прохождение `isinstance(fake, Port)` для класса без наследования, негативная проверка, неизменяемость
+    `ProviderResult`/`IdempotencyRecord` и валидация их значений.
+- **Проверки:** `make -C backend lint` (ruff check + format check + mypy --strict) — зелёные; `make -C backend test` — 370 passed.
+- **Нюансы:**
+  - `PaymentProvider` объявлен уже в T-2.1 (он есть в списке портов задачи), поэтому его минимальный контракт и
+    типы `ProviderResult`/`ProviderStatus` определены здесь — иначе пакет не импортируется и `mypy --strict` не проходит.
+    Детальная финализация контракта — T-2.2, полный DTO-пакет (может реэкспортировать эти типы) — T-2.3.
+  - В `create_payment` использован доменный `PaymentId` вместо `UUID` из формулировки T-2.2 — строже и консистентно с доменом.
+  - `PaymentRepository.get_by_provider_payment_id` добавлен под обработку вебхуков (T-2.7).
 
 ### [ ] T-2.2. Порт PaymentProvider
 - **Что сделать:** Интерфейс Protocol:
