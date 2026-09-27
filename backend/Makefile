@@ -6,7 +6,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 .PHONY: help install lint format pre-commit pre-commit-install \
-        test test-cov test-unit test-integration \
+        test test-cov test-cov-domain test-unit test-integration \
         migrate alembic-rev alembic-down \
         gen-proto run-api run-core run-workers run-tasks run-scheduler otel-smoke \
         clean-cache
@@ -56,6 +56,10 @@ test-integration: ## Запустить интеграционные тесты 
 
 test-cov: ## Запустить тесты с отчётом покрытия
 	uv run pytest --cov=src --cov-report=term-missing
+
+test-cov-domain: ## Запустить тесты с проверкой покрытия доменного слоя (>= 90%)
+	uv run pytest --cov=src/core_service/domain --cov-report=term-missing --cov-fail-under=90
+
 
 # ------------------------------------------------------------------------------
 # Database
