@@ -1,7 +1,7 @@
 # ЭПИК 1: Domain Layer
 
-> **Статус эпика:** `[ ] TODO`
-> **Подтверждение пользователя:** `[ ] Подтверждено`
+> **Статус эпика:** `[x] DONE`
+> **Подтверждение пользователя:** `[x] Подтверждено`
 
 ## Цель
 Чистый Python (никаких sqlalchemy, grpc, fastapi).
@@ -138,7 +138,11 @@ DDD: Value Objects, Entities, Domain Events, Domain Exceptions, инвариан
   - `tests/unit/domain/test_exceptions.py` — unit-тесты на иерархию наследования, фильтрацию по типам (`ValueError` vs `DomainError`), корректность сообщений, перехват общим `except DomainError`, а также тесты на выброс и обработку `DuplicateOperation` и `PaymentProviderError`.
 - **Проверки:** `make -C backend lint` (ruff + mypy --strict) — зелёные; `make -C backend test` — 299 passed; покрытие `src/core_service/domain` — 100% (499/499 stmts); `pre-commit` — все хуки пройдены.
 
-### [ ] T-1.6. Покрытие domain >= 90%
+### [x] T-1.6. Покрытие domain >= 90%
 - **Что сделать:** Запустить `pytest --cov=core_service/domain`.
 - **DoD:** Покрытие кода domain >= 90%.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `backend/Makefile` — добавлен таргет `test-cov-domain` с автоматической проверкой минимального порога покрытия: `uv run pytest --cov=src/core_service/domain --cov-report=term-missing --cov-fail-under=90`.
+  - Покрытие доменного слоя `src/core_service/domain` составляет **100%** (499/499 statements, 0 miss).
+- **Проверки:** `make -C backend test-cov-domain` — 310 passed, 100% coverage; `make -C backend lint` — зелёные; `pre-commit` — все хуки пройдены.
