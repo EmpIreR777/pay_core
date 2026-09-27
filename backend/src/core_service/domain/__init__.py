@@ -17,6 +17,7 @@ from src.core_service.domain.exceptions import (
     AccountBlocked,
     CurrencyMismatchError,
     DomainError,
+    DuplicateOperation,
     InsufficientFunds,
     InvalidAmountError,
     InvalidCurrencyError,
@@ -24,6 +25,7 @@ from src.core_service.domain.exceptions import (
     InvalidTransition,
     InvalidValueError,
     NegativeAmountError,
+    PaymentProviderError,
 )
 from src.core_service.domain.value_objects import (
     ALLOWED_TRANSITIONS,
@@ -46,6 +48,7 @@ __all__ = (
     'CurrencyMismatchError',
     'DomainError',
     'DomainEvent',
+    'DuplicateOperation',
     'Identifier',
     'InsufficientFunds',
     'InvalidAmountError',
@@ -59,6 +62,7 @@ __all__ = (
     'PaymentCreated',
     'PaymentFailed',
     'PaymentId',
+    'PaymentProviderError',
     'PaymentRefunded',
     'PaymentSettled',
     'PaymentStatus',

@@ -128,10 +128,15 @@ DDD: Value Objects, Entities, Domain Events, Domain Exceptions, инвариан
 - **Проверки:** `make -C backend lint` (ruff + format + mypy --strict) — зелёные; `make -C backend test` — 259 passed; покрытие `src/core_service/domain` — 100% (497/497 stmts).
 
 
-### [ ] T-1.5. Domain Exceptions
+### [x] T-1.5. Domain Exceptions
 - **Что сделать:** DomainError -> InsufficientFunds, AccountBlocked, InvalidTransition, DuplicateOperation, PaymentProviderError.
 - **DoD:** Unit-тесты на выброс и перехват исключений.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `src/core_service/domain/exceptions.py` — полная иерархия доменных исключений: базовый `DomainError(Exception)`, подклассы ошибок формата Value Object (`InvalidValueError(DomainError, ValueError)`, `InvalidCurrencyError`, `CurrencyMismatchError`, `InvalidAmountError`, `NegativeAmountError`, `InvalidIdentifierError`) и бизнес-исключения предметной логики (`InsufficientFunds`, `AccountBlocked`, `InvalidTransition`, `DuplicateOperation`, `PaymentProviderError`), наследующиеся напрямую от `DomainError` без `ValueError`.
+  - `src/core_service/domain/__init__.py` — реэкспорт `DuplicateOperation` и `PaymentProviderError` наружу слоя.
+  - `tests/unit/domain/test_exceptions.py` — unit-тесты на иерархию наследования, фильтрацию по типам (`ValueError` vs `DomainError`), корректность сообщений, перехват общим `except DomainError`, а также тесты на выброс и обработку `DuplicateOperation` и `PaymentProviderError`.
+- **Проверки:** `make -C backend lint` (ruff + mypy --strict) — зелёные; `make -C backend test` — 299 passed; покрытие `src/core_service/domain` — 100% (499/499 stmts); `pre-commit` — все хуки пройдены.
 
 ### [ ] T-1.6. Покрытие domain >= 90%
 - **Что сделать:** Запустить `pytest --cov=core_service/domain`.
