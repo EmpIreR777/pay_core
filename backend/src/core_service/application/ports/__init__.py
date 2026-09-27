@@ -9,6 +9,7 @@ from src.core_service.application.ports.account_repository import AccountReposit
 from src.core_service.application.ports.clock import Clock
 from src.core_service.application.ports.event_publisher import EventPublisher
 from src.core_service.application.ports.idempotency_store import (
+    MAX_IDEMPOTENCY_KEY_LENGTH,
     IdempotencyRecord,
     IdempotencyStore,
 )
@@ -22,6 +23,7 @@ from src.core_service.application.ports.payment_repository import PaymentReposit
 from src.core_service.application.ports.unit_of_work import UnitOfWork
 
 __all__ = (
+    'MAX_IDEMPOTENCY_KEY_LENGTH',
     'AccountRepository',
     'Clock',
     'DistributedLock',

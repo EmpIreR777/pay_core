@@ -56,7 +56,7 @@ class TestDomainEventBase:
             event.occurred_at = datetime.now(UTC)  # type: ignore[misc]
 
     def test_rejects_non_uuid_event_id(self) -> None:
-        with pytest.raises(InvalidValueError, match='event_id: ожидается UUID'):
+        with pytest.raises(InvalidValueError, match='event_id: ожидается экземпляр UUID'):
             DomainEvent(event_id='not-a-uuid')  # type: ignore[arg-type]
 
     def test_rejects_naive_occurred_at(self) -> None:
@@ -167,7 +167,7 @@ class TestPaymentSettled:
 
     def test_rejects_non_str_provider_payment_id(self) -> None:
         payment_id, account_id, amount = _create_sample_ids()
-        with pytest.raises(InvalidValueError, match='provider_payment_id: ожидается str или None'):
+        with pytest.raises(InvalidValueError, match='provider_payment_id: ожидается непустая строка или None'):
             PaymentSettled(
                 payment_id=payment_id,
                 from_account_id=account_id,
@@ -206,7 +206,7 @@ class TestPaymentFailed:
 
     def test_rejects_non_str_reason(self) -> None:
         payment_id, account_id, amount = _create_sample_ids()
-        with pytest.raises(InvalidValueError, match='reason: ожидается str'):
+        with pytest.raises(InvalidValueError, match='reason: ожидается непустая строка'):
             PaymentFailed(
                 payment_id=payment_id,
                 from_account_id=account_id,
@@ -254,7 +254,7 @@ class TestPaymentRefunded:
 
     def test_rejects_non_str_reason(self) -> None:
         payment_id, account_id, amount = _create_sample_ids()
-        with pytest.raises(InvalidValueError, match='reason: ожидается str или None'):
+        with pytest.raises(InvalidValueError, match='reason: ожидается непустая строка или None'):
             PaymentRefunded(
                 payment_id=payment_id,
                 from_account_id=account_id,

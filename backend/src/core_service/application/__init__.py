@@ -6,7 +6,13 @@
 * `dto` — входные и выходные структуры данных сценариев.
 """
 
+from src.core_service.application.dto import (
+    CreatePaymentInput,
+    CreatePaymentOutput,
+    GetPaymentInput,
+)
 from src.core_service.application.ports import (
+    MAX_IDEMPOTENCY_KEY_LENGTH,
     AccountRepository,
     Clock,
     DistributedLock,
@@ -22,10 +28,14 @@ from src.core_service.application.ports import (
 )
 
 __all__ = (
+    'MAX_IDEMPOTENCY_KEY_LENGTH',
     'AccountRepository',
     'Clock',
+    'CreatePaymentInput',
+    'CreatePaymentOutput',
     'DistributedLock',
     'EventPublisher',
+    'GetPaymentInput',
     'IdempotencyRecord',
     'IdempotencyStore',
     'LockManager',

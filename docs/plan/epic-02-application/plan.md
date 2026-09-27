@@ -91,10 +91,54 @@
   - Тест «ровно три операции» сознательно ломается при добавлении операции в порт: это защита от
     случайного расширения контракта, правка теста — часть легального изменения порта.
 
-### [ ] T-2.3. DTO
+### [x] T-2.3. DTO
 - **Что сделать:** CreatePaymentInput/Output, GetPaymentInput, ProviderResult, ProviderStatus.
 - **DoD:** Валидация и строгая типизация.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `application/dto/payment.py` — три DTO как `@dataclass(frozen=True, slots=True, kw_only=True)`
+    с валидацией в `__post_init__` (тот же стиль, что у типов, пересекающих порты: `ProviderResult`,
+    `IdempotencyRecord`):
+    - `CreatePaymentInput(from_account_id: AccountId, amount: Money, idempotency_key: str)` — вход саги
+      создания платежа (T-2.4);
+    - `CreatePaymentOutput(payment_id: PaymentId, status: PaymentStatus, amount: Money, created_at: datetime,
+      provider_payment_id: str | None = None)` — результат саги (обычно `PROCESSING`, при отказе провайдера — `FAILED`);
+    - `GetPaymentInput(payment_id: PaymentId)` — вход чтения платежа (T-2.5).
+  - **Валидация** (DoD): строгие проверки типов полей с доменными ошибками вместо
+    `TypeError`/`AttributeError`; нулевая сумма -> `InvalidAmountError`; `idempotency_key`
+    нормализуется (`strip`) и отвергается при пустоте и длине >
+    `MAX_IDEMPOTENCY_KEY_LENGTH = 255` (граница хранилища ключей, ЭПИК 4);
+    `provider_payment_id` — непустая строка или `None`; `created_at` — только timezone-aware UTC.
+    Проверки берутся из `domain/validation.py` — единого источника правил (AGENT.md §4.4),
+    локальных копий в DTO нет.
+  - **Согласованность статуса и идентификатора провайдера**: правило
+    `require_provider_payment_coherence` (живёт рядом со статус-машиной,
+    `value_objects/payment_status.py`):
+    для `PROCESSING`/`SETTLED` (набор `PROVIDER_BOUND_PAYMENT_STATUSES`) `provider_payment_id` обязателен,
+    а для `PENDING` запрещён. Так маппер, «забывший» перенести идентификатор операции, падает на границе
+    сценария, а не при обработке вебхука.
+  - `application/dto/__init__.py` — реэкспорт DTO + **реэкспорт `ProviderResult`/`ProviderStatus` из порта**
+    (`is`-идентичность закреплена тестом): один источник правды, дублей типов провайдера в DTO нет.
+  - `application/__init__.py` — DTO добавлены в единую точку экспорта слоя (`CreatePaymentInput`,
+    `CreatePaymentOutput`, `GetPaymentInput`, `MAX_IDEMPOTENCY_KEY_LENGTH`).
+  - `tests/unit/application/test_dto.py` — 57 тестов: строгая типизация через `dataclasses.fields()`
+    (типы полей тождественны доменным VO, все поля `kw_only`), иммутабельность (`slots` + `FrozenInstanceError`),
+    обязательность полей, валидация каждого поля (не-`AccountId`/`Money`/`PaymentId`/`PaymentStatus`, ноль,
+    пустой/длинный ключ, обрезка пробелов, наивное и не-UTC время, пустой `provider_payment_id`),
+    согласованность статуса и `provider_payment_id`, реэкспорт портовых типов и таксономия ошибок
+    (валидация поднимает `DomainError`).
+- **Проверки:** `make -C backend lint` (ruff check + format check + mypy --strict) — зелёные;
+  `make -C backend test` — все тесты проходят.
+- **Нюансы:**
+  - **Pydantic в ядре не используем осознанно**: DTO прикладного слоя — иммутабельные dataclass'ы с ручной
+    валидацией. Pydantic-схемы остаются уровнем BFF (T-7.1), чтобы ядро не зависело от веб-фреймворка,
+    а транспорт не диктовал форму доменного контракта.
+  - DTO принимают **доменные типы** (`AccountId`, `Money`), а не «сырые» `str`/`UUID`/`Decimal`: разбор
+    входа — задача транспортного адаптера (ЭПИК 6/7), поэтому в ядре нет повторной валидации UUID/валюты.
+  - Мапперы (`from_payment`) не добавлялись: преобразование сущности в DTO — работа сценария (T-2.4/T-2.5),
+    и её форма зависит от фактического флоу саги.
+  - DTO для отмены (`T-2.6`), вебхука (`T-2.7`) и стрима (`T-2.8`) не создавались: в списке T-2.3 их нет,
+    при необходимости они появятся вместе со своими сценариями.
 
 ### [ ] T-2.4. UseCase CreatePayment
 - **Что сделать:** Сагаподобный флоу:

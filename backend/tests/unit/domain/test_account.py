@@ -76,37 +76,37 @@ def test_create_keeps_currency_of_account() -> None:
 
 
 def test_create_rejects_non_currency() -> None:
-    with pytest.raises(InvalidValueError, match='Валюта счёта должна быть Currency'):
+    with pytest.raises(InvalidValueError, match='Валюта счёта: ожидается экземпляр Currency'):
         Account.create('RUB')  # type: ignore[arg-type]
 
 
 def test_constructor_rejects_plain_uuid_instead_of_account_id() -> None:
     """Сильная типизация: UUID сам по себе не «идентификатор счёта»."""
-    with pytest.raises(InvalidIdentifierError, match='должен быть AccountId'):
+    with pytest.raises(InvalidIdentifierError, match='Идентификатор счёта: ожидается экземпляр AccountId'):
         Account(uuid4(), Money.zero(Currency.RUB))  # type: ignore[arg-type]
 
 
 def test_constructor_rejects_non_money_balance() -> None:
-    with pytest.raises(InvalidValueError, match='Баланс должен быть Money'):
+    with pytest.raises(InvalidValueError, match='Баланс: ожидается экземпляр Money'):
         Account(AccountId.new(), Decimal('10.00'))  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize('raw_flag', [1, 0, 'true', None])
 def test_constructor_rejects_non_bool_block_flag(raw_flag: object) -> None:
     """bool — подкласс int: без проверки ``is_blocked=1`` заблокировал бы счёт."""
-    with pytest.raises(InvalidValueError, match='должен быть bool'):
+    with pytest.raises(InvalidValueError, match='Признак блокировки: ожидается экземпляр bool'):
         Account(AccountId.new(), Money.zero(Currency.RUB), is_blocked=raw_flag)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize('raw_version', [True, False, '3', 3.0, None])
 def test_constructor_rejects_non_int_version(raw_version: object) -> None:
-    with pytest.raises(InvalidValueError, match='Версия должна быть int'):
+    with pytest.raises(InvalidValueError, match='Версия: ожидается int'):
         Account(AccountId.new(), Money.zero(Currency.RUB), version=raw_version)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize('raw_version', [0, -1, -100])
 def test_constructor_rejects_version_below_minimum(raw_version: int) -> None:
-    with pytest.raises(InvalidValueError, match='не меньше'):
+    with pytest.raises(InvalidValueError, match='не может быть меньше'):
         Account(AccountId.new(), Money.zero(Currency.RUB), version=raw_version)
 
 
@@ -188,7 +188,7 @@ def test_deposit_of_raw_number_is_rejected() -> None:
     """Голая сумма без валюты — ошибка вызова, а не AttributeError изнутри."""
     account = make_account()
 
-    with pytest.raises(InvalidValueError, match='ожидается Money'):
+    with pytest.raises(InvalidValueError, match='ожидается экземпляр Money'):
         account.deposit(500)  # type: ignore[arg-type]
 
 
@@ -278,7 +278,7 @@ def test_withdraw_in_another_currency_is_rejected() -> None:
 def test_withdraw_of_raw_number_is_rejected() -> None:
     account = make_account()
 
-    with pytest.raises(InvalidValueError, match='ожидается Money'):
+    with pytest.raises(InvalidValueError, match='ожидается экземпляр Money'):
         account.withdraw(500)  # type: ignore[arg-type]
 
 

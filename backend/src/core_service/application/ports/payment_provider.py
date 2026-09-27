@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from src.core_service.domain.exceptions import InvalidValueError
+from src.core_service.domain.validation import require_non_empty_str, require_type
 from src.core_service.domain.value_objects.identifiers import PaymentId
 from src.core_service.domain.value_objects.money import Money
 
@@ -107,10 +107,12 @@ class ProviderResult:
     status: ProviderStatus
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provider_payment_id, str) or not self.provider_payment_id.strip():
-            raise InvalidValueError('provider_payment_id должен быть непустой строкой')
-        if not isinstance(self.status, ProviderStatus):
-            raise InvalidValueError(f'status должен быть ProviderStatus, получено {type(self.status).__name__}')
+        require_type(self.status, ProviderStatus, 'status')
+        object.__setattr__(
+            self,
+            'provider_payment_id',
+            require_non_empty_str(self.provider_payment_id, 'provider_payment_id'),
+        )
 
 
 @runtime_checkable

@@ -8,7 +8,12 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
+
+#: Максимальная длина ключа идемпотентности. Граница живёт здесь — в контракте
+#: хранилища, а не в DTO или транспорте: колонка ``idempotency_keys.key`` объявлена
+#: VARCHAR(255) (ЭПИК 4), и все три слоя обязаны мерить ключ по одной цифре.
+MAX_IDEMPOTENCY_KEY_LENGTH: Final = 255
 
 
 @dataclass(frozen=True, slots=True)
