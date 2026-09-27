@@ -54,6 +54,8 @@ def _require_utc(dt: datetime, field_name: str) -> datetime:
         raise InvalidValueError(f'{field_name}: ожидается datetime, получено {type(dt).__name__}')
     if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
         raise InvalidValueError(f'{field_name}: datetime должен быть timezone-aware (UTC)')
+    if dt.tzinfo.utcoffset(dt) != UTC.utcoffset(dt):
+        raise InvalidValueError(f'{field_name}: временная зона должна быть строго UTC, получено {dt.tzinfo}')
     return dt
 
 

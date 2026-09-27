@@ -9,7 +9,7 @@ DoD задачи:
 """
 
 import itertools
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -179,6 +179,16 @@ def test_constructor_validates_datetime_timezone_aware() -> None:
             from_account_id=AccountId.new(),
             amount=rub('10.00'),
             created_at='2025-01-01',  # type: ignore[arg-type]
+        )
+    # non-UTC aware datetime
+    tz_plus_3 = timezone(timedelta(hours=3))
+    dt_with_offset = datetime(2025, 1, 1, 12, 0, 0, tzinfo=tz_plus_3)
+    with pytest.raises(InvalidValueError, match='временная зона должна быть строго UTC'):
+        Payment(
+            payment_id=PaymentId.new(),
+            from_account_id=AccountId.new(),
+            amount=rub('10.00'),
+            created_at=dt_with_offset,
         )
 
     aware_dt = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)

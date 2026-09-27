@@ -111,10 +111,22 @@ DDD: Value Objects, Entities, Domain Events, Domain Exceptions, инвариан
 - **Проверки:** `make -C backend lint` (ruff + mypy --strict) — зелёные; `make -C backend test` — 235 passed; покрытие `src/core_service/domain` — 100% (421/421 stmts); `pre-commit` — все хуки пройдены.
 
 
-### [ ] T-1.4. Domain Events
+### [x] T-1.4. Domain Events
 - **Что сделать:** PaymentCreated, PaymentSettled, PaymentFailed, PaymentRefunded. Уникальные event_id (UUID4), timestamp occurred_at (UTC).
 - **DoD:** Тесты на генерацию событий и их неизменяемость.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `src/core_service/domain/events/base.py` — базовый класс `DomainEvent` (`frozen=True`, `kw_only=True`). По умолчанию генерирует уникальный `event_id` (`UUID4`) и фиксирует текущее время `occurred_at` (строго timezone-aware UTC datetime). Защита от мутаций и строгая валидация типов.
+  - `src/core_service/domain/events/payment.py` — доменные события жизненного цикла платежей:
+    - `PaymentCreated`: `payment_id: PaymentId`, `from_account_id: AccountId`, `amount: Money`.
+    - `PaymentSettled`: `payment_id: PaymentId`, `from_account_id: AccountId`, `amount: Money`, `provider_payment_id: str | None = None`.
+    - `PaymentFailed`: `payment_id: PaymentId`, `from_account_id: AccountId`, `amount: Money`, `reason: str`.
+    - `PaymentRefunded`: `payment_id: PaymentId`, `from_account_id: AccountId`, `refunded_amount: Money`, `reason: str | None = None`.
+    - Валидация типов в `__post_init__` с выбросом `InvalidValueError`.
+  - `src/core_service/domain/events/__init__.py`, `src/core_service/domain/__init__.py` — реэкспорт событий в доменный слой.
+  - `tests/unit/domain/test_events.py` — unit-тесты на неизменяемость (`FrozenInstanceError`), генерацию UUID4/UTC, валидацию типов и параметров, наследование.
+- **Проверки:** `make -C backend lint` (ruff + format + mypy --strict) — зелёные; `make -C backend test` — 259 passed; покрытие `src/core_service/domain` — 100% (497/497 stmts).
+
 
 ### [ ] T-1.5. Domain Exceptions
 - **Что сделать:** DomainError -> InsufficientFunds, AccountBlocked, InvalidTransition, DuplicateOperation, PaymentProviderError.

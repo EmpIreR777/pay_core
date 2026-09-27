@@ -1,4 +1,4 @@
-"""Доменный слой Core Service (T-1.1, T-1.2, T-1.3).
+"""Доменный слой Core Service (T-1.1, T-1.2, T-1.3, T-1.4).
 
 Чистый Python без внешних зависимостей: ни SQLAlchemy, ни gRPC, ни FastAPI,
 ни Pydantic. Здесь живут инварианты финансовой логики; знание о том, где
@@ -6,6 +6,13 @@
 """
 
 from src.core_service.domain.entities import Account, Payment
+from src.core_service.domain.events import (
+    DomainEvent,
+    PaymentCreated,
+    PaymentFailed,
+    PaymentRefunded,
+    PaymentSettled,
+)
 from src.core_service.domain.exceptions import (
     AccountBlocked,
     CurrencyMismatchError,
@@ -38,6 +45,7 @@ __all__ = (
     'Currency',
     'CurrencyMismatchError',
     'DomainError',
+    'DomainEvent',
     'Identifier',
     'InsufficientFunds',
     'InvalidAmountError',
@@ -48,6 +56,10 @@ __all__ = (
     'Money',
     'NegativeAmountError',
     'Payment',
+    'PaymentCreated',
+    'PaymentFailed',
     'PaymentId',
+    'PaymentRefunded',
+    'PaymentSettled',
     'PaymentStatus',
 )
