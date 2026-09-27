@@ -96,10 +96,20 @@ DDD: Value Objects, Entities, Domain Events, Domain Exceptions, инвариан
   равны, если равны их идентификаторы. Хеш при этом стабилен при мутациях, поэтому
   счёт можно класть в `set`/`dict`.
 
-### [ ] T-1.3. Entity Payment + статус-машина
+### [x] T-1.3. Entity Payment + статус-машина
 - **Что сделать:** Статусы: PENDING -> PROCESSING -> SETTLED / FAILED / CANCELLED. Метод `transition_to` строго валидирует переходы.
 - **DoD:** Тесты на все валидные и недопустимые переходы.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - `src/core_service/domain/exceptions.py` — добавлено бизнес-исключение `InvalidTransition(DomainError)`, сигнализирующее о попытке совершить недопустимый переход статуса в FSM платежа.
+  - `value_objects/payment_status.py` — `PaymentStatus(StrEnum)` с полным набором статусов (`PENDING`, `PROCESSING`, `SETTLED`, `FAILED`, `CANCELLED`), проверкой терминальности `is_terminal` и картой допустимых переходов `ALLOWED_TRANSITIONS`.
+  - `entities/payment.py` — сущность `Payment` с инкапсулированным состоянием через `__slots__` и read-only свойства: `id`, `from_account_id`, `amount`, `currency`, `status`, `version`, `provider_payment_id`, `failure_reason`, `created_at`, `updated_at`. Валидация типов (строгие `PaymentId`, `AccountId`, `Money`, запрет нулевой суммы, UTC datetime).
+  - Конечный автомат в методе `transition_to`: строгая валидация допустимости перехода; при недопустимом переходе выбрасывается `InvalidTransition`, а состояние и версия остаются нетронутыми; при успехе инкрементируется версия оптимистичной блокировки `version` и обновляется `updated_at`.
+  - Вспомогательные методы жизненного цикла: `process`, `settle`, `fail`, `cancel` и фабричный метод `Payment.create`.
+  - Тождество сущности: `__eq__` и `__hash__` строго по `PaymentId` (стабильность хеша при мутациях).
+  - `tests/unit/domain/test_payment.py` — матричные параметризованные тесты всех $5 \times 5 = 25$ комбинаций переходов (4 валидных, 21 невалидный), тесты на инварианты, инкремент версий, методы жизненного цикла и идентичность.
+- **Проверки:** `make -C backend lint` (ruff + mypy --strict) — зелёные; `make -C backend test` — 235 passed; покрытие `src/core_service/domain` — 100% (421/421 stmts); `pre-commit` — все хуки пройдены.
+
 
 ### [ ] T-1.4. Domain Events
 - **Что сделать:** PaymentCreated, PaymentSettled, PaymentFailed, PaymentRefunded. Уникальные event_id (UUID4), timestamp occurred_at (UTC).
