@@ -6,13 +6,19 @@
 
 from contextlib import AbstractAsyncContextManager
 from types import TracebackType
-from typing import Protocol, Self, runtime_checkable
+from typing import Final, Protocol, Self, runtime_checkable
 
 #: TTL блокировки по умолчанию: защита от «вечной» блокировки упавшим процессом.
 DEFAULT_LOCK_TTL_SECONDS: float = 30.0
 
 #: Ожидание освобождения по умолчанию: 0 — не ждать, сразу вернуть неудачу.
 DEFAULT_LOCK_WAIT_SECONDS: float = 0.0
+
+#: Префикс имени блокируемого ресурса «счёт плательщика» (``account:<uuid>``).
+#: Формат задан здесь, а не в сценарии: по нему строятся и блокировки сценариев
+#: (T-2.4), и ключи Redis в адаптере (ЭПИК 5) — второй источник правды разошёлся
+#: бы с первым при первом же переименовании.
+ACCOUNT_LOCK_RESOURCE_PREFIX: Final = 'account:'
 
 
 @runtime_checkable

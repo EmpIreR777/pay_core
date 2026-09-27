@@ -60,7 +60,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from src.core_service.domain.validation import require_non_empty_str, require_type
 from src.core_service.domain.value_objects.identifiers import PaymentId
@@ -82,6 +82,19 @@ class ProviderStatus(StrEnum):
     SUCCEEDED = 'SUCCEEDED'  # успешно завершён
     FAILED = 'FAILED'  # отклонён или неуспешен
     REFUNDED = 'REFUNDED'  # по операции выполнен возврат
+
+
+#: Терминальные статусы шкалы провайдера — те же, что перечислены в docstring
+#: модуля: после них опрашивать состояние больше не нужно. Объявлено кодом, а не
+#: только прозой, чтобы сценарий (T-2.4) и сверка (T-2.10) отсекали опрос по
+#: одному правилу; новый статус провайдера попадёт сюда явно, а не «забытостью».
+TERMINAL_PROVIDER_STATUSES: Final[frozenset[ProviderStatus]] = frozenset(
+    {
+        ProviderStatus.SUCCEEDED,
+        ProviderStatus.FAILED,
+        ProviderStatus.REFUNDED,
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)

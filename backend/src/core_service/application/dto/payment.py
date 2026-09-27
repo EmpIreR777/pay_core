@@ -22,10 +22,14 @@
 (:data:`MAX_IDEMPOTENCY_KEY_LENGTH`), потому что соответствует ширине колонки БД.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
+from typing import Any, Self
 
 from src.core_service.application.ports.idempotency_store import MAX_IDEMPOTENCY_KEY_LENGTH
+from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.exceptions import InvalidIdentifierError
 from src.core_service.domain.validation import (
     require_max_length_str,
@@ -35,12 +39,24 @@ from src.core_service.domain.validation import (
     require_type,
     require_utc,
 )
+from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
 from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import (
     PaymentStatus,
     require_provider_payment_coherence,
 )
+
+
+def _response_str(response: Mapping[str, Any], field: str) -> str:
+    """Достаёт обязательное строковое поле сохранённого ответа.
+
+    Ответ хранилища идемпотентности приходит из БД, а не из нашего кода, поэтому
+    проверяется тем же правилом, что и любой вход (``require_non_empty_str``):
+    повреждённая запись обязана падать с доменной ошибкой, а не с ``KeyError``
+    или ``TypeError`` из глубины разбора.
+    """
+    return require_non_empty_str(response.get(field), f'ответ идемпотентности: {field}')
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -109,6 +125,71 @@ class CreatePaymentOutput:
         provider_payment_id = require_optional_non_empty_str(self.provider_payment_id, 'provider_payment_id')
         object.__setattr__(self, 'provider_payment_id', provider_payment_id)
         require_provider_payment_coherence(self.status, provider_payment_id)
+
+    # --- Преобразования (владение форматом — здесь, а не в сценарии) -----------
+
+    @classmethod
+    def from_payment(cls, payment: Payment) -> Self:
+        """Собирает результат сценария из сущности платежа.
+
+        Единственное место, где доменный объект превращается в DTO: правило
+        «какие поля сущности попадают наружу» не должно повторяться по сценариям
+        (T-2.5, T-2.7 собирают такие же выходы).
+
+        :raises InvalidValueError: если сущность в статусе, несовместимом с её
+            же идентификатором операции у провайдера.
+        """
+        require_type(payment, Payment, 'payment')
+        return cls(
+            payment_id=payment.id,
+            status=payment.status,
+            amount=payment.amount,
+            created_at=payment.created_at,
+            provider_payment_id=payment.provider_payment_id,
+        )
+
+    def to_idempotency_response(self) -> dict[str, Any]:
+        """Приводит результат к виду, пригодному для хранения ответа-ключа.
+
+        Формат ответа хранилища идемпотентности — тоже «факт с владельцем»:
+        его читает повторный запрос (T-4.2), поэтому он живёт рядом с самим
+        DTO, а не собирается по месту вызова. Всё, что не выражается
+        JSON-скалярами, кодируется строкой и разбирается обратно в
+        :meth:`from_idempotency_response` — доменные типы на границе хранилища
+        не сериализуются «как получится».
+        """
+        return {
+            'payment_id': str(self.payment_id),
+            'status': str(self.status),
+            'amount': str(self.amount.amount),
+            'currency': str(self.amount.currency),
+            'created_at': self.created_at.isoformat(),
+            'provider_payment_id': self.provider_payment_id,
+        }
+
+    @classmethod
+    def from_idempotency_response(cls, response: Mapping[str, Any]) -> Self:
+        """Восстанавливает результат из сохранённого ответа хранилища.
+
+        Обратная операция к :meth:`to_idempotency_response`. Платеж, который
+        повторный запрос вернёт клиенту, проходит ту же валидацию, что и
+        только что созданный, — иначе «повтор» отдавал бы ослабленный DTO.
+
+        :raises InvalidValueError: если ответ повреждён или неполон.
+        """
+        return cls(
+            payment_id=PaymentId.from_string(_response_str(response, 'payment_id')),
+            status=PaymentStatus(_response_str(response, 'status')),
+            amount=Money(
+                amount=Decimal(_response_str(response, 'amount')),
+                currency=Currency(_response_str(response, 'currency')),
+            ),
+            created_at=datetime.fromisoformat(_response_str(response, 'created_at')),
+            provider_payment_id=require_optional_non_empty_str(
+                response.get('provider_payment_id'),
+                'provider_payment_id',
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
