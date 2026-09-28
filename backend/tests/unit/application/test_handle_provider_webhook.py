@@ -45,7 +45,7 @@ from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId
 from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
-from tests.unit.application.fakes import FROZEN_NOW, SagaEnvironment
+from tests.fakes import FROZEN_NOW, SagaEnvironment
 
 BALANCE = Decimal('1000.00')
 AMOUNT = Decimal('250.00')

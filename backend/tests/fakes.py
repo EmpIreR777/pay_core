@@ -1,15 +1,18 @@
-"""In-memory фейки портов для тестов прикладных сценариев (T-2.4).
+"""Переносимые in-memory фейки портов прикладного слоя (T-2.9).
 
-Переносимые фейки слоя приложения появятся в T-2.9 — там они нужны, чтобы
-запускать сценарии без инфраструктуры. Здесь только тестовые doubles: их дело —
-дать сценарию проверяемое окружение, поэтому они помнят вызовы («провайдера звали
-один раз») и ведут журнал шагов.
+Здесь собрано всё, что нужно, чтобы запустить юзкейсы без внешней инфры:
+база данных, Redis, внешний шлюз и реальное время подменяются фейками,
+а готовое окружение собирается через :class:`SagaEnvironment`. Модуль лежит
+в корне ``tests/``, а не в юнит-пакете: фейками пользуются тесты любого
+уровня (unit, интеграционные, e2e), которым нужен чистый прикладной слой
+без Docker.
 
 Фейки намеренно **не наследуют** порты. Наследование от ``Protocol`` сделало бы
 проверку формы бессмысленной (недостающий метод молча унаследуется заглушкой), а
-именно совпадение «по форме» — то, что требуется от настоящих адаптеров. Если
-фейк не удовлетворяет порту, тест падает сам: это дешёвый способ не разойтись
-с контрактом.
+именно совпадение «по форме» — то, что требуется от настоящих адаптеров. Что
+фейки проходят контракты своих портов, проверяет ``tests/unit/application/
+test_fakes.py`` через ``isinstance`` с ``runtime_checkable``-протоколами: если
+фейк разойдётся с контрактом, упадёт тест, а не молча сломается сценарий.
 """
 
 from __future__ import annotations
@@ -381,11 +384,23 @@ class RecordingEventPublisher:
 
 
 class FakePaymentProvider:
-    """Настраиваемый провайдер: успех, отказ по бизнесу, технический сбой.
+    """Настраиваемый провайдер: успех, отказ и задержка ответа (T-2.9).
 
     Исход задаётся полями, а не наследованием — каждый тест выражает нужный
-    исход в одной строке. Провайдер заодно проверяет инвариант саги: запоминает,
-    была ли в момент вызова открыта транзакция БД.
+    исход в одной строке:
+
+    * **success** — поведение по умолчанию: ``status`` для ``create_payment``
+      и отдельный ``status_query`` для ``get_status`` (создали успешно,
+      а актуализация может сообщить другое);
+    * **failure** — ``error``, ``status_query_error`` и ``refund_error``
+      поднимают своё исключение ровно на своём вызове, не мешая остальным;
+    * **delay** — ``delay`` секунд на каждый ответ через переданный
+      ``sleeper``: пауза идёт по часам теста (:class:`FakeSleeper` двигает
+      :class:`FakeClock`), а не по реальному времени, поэтому сценарий
+      остаётся детерминированным.
+
+    Провайдер заодно проверяет инвариант саги: запоминает, была ли в момент
+    вызова открыта транзакция БД.
     """
 
     def __init__(
@@ -397,7 +412,14 @@ class FakePaymentProvider:
         uow_factory: FakeUnitOfWorkFactory | None = None,
         status_query: ProviderStatus | None = None,
         status_query_error: Exception | None = None,
+        refund_error: Exception | None = None,
+        delay: float = 0.0,
+        sleeper: FakeSleeper | None = None,
     ) -> None:
+        if delay < 0:
+            raise ValueError('задержка провайдера не может быть отрицательной')
+        if delay > 0 and sleeper is None:
+            raise ValueError('задержке провайдера нужен sleeper: без него сон шёл бы по реальному времени')
         self.status = status
         self.error = error
         # Ответ get_status отделён от ответа create_payment: у сценария чтения
@@ -406,12 +428,15 @@ class FakePaymentProvider:
         # позволяло бы выразить «создали успешно, а актуализация выявила отказ».
         self.status_query = status_query
         self.status_query_error = status_query_error
+        self.refund_error = refund_error
+        self.delay = delay
         self.calls: list[tuple[PaymentId, Money, str]] = []
         self.status_queries: list[str] = []
         self.open_uow_during_calls: list[bool] = []
         self.open_uow_during_queries: list[bool] = []
         self._journal = journal
         self._uow_factory = uow_factory
+        self._sleeper = sleeper
 
     @property
     def call_count(self) -> int:
@@ -419,6 +444,11 @@ class FakePaymentProvider:
 
     def _is_uow_open(self) -> bool:
         return self._uow_factory.open_units > 0 if self._uow_factory else False
+
+    async def _sleep(self) -> None:
+        """Пауза «сети» по часам теста, если задержка задана."""
+        if self.delay > 0 and self._sleeper is not None:
+            await self._sleeper(self.delay)
 
     async def create_payment(
         self,
@@ -430,6 +460,7 @@ class FakePaymentProvider:
         self.calls.append((payment_id, amount, idempotency_key))
         self.open_uow_during_calls.append(self._is_uow_open())
         self._journal.record('provider.create_payment')
+        await self._sleep()
         if self.error is not None:
             raise self.error
         return ProviderResult(provider_payment_id=f'provider-{payment_id}', status=self.status)
@@ -438,6 +469,7 @@ class FakePaymentProvider:
         self.status_queries.append(provider_payment_id)
         self.open_uow_during_queries.append(self._is_uow_open())
         self._journal.record('provider.get_status')
+        await self._sleep()
         if self.status_query_error is not None:
             raise self.status_query_error
         # Если отдельный ответ не задан, провайдер сообщает тот же статус, что и
@@ -445,9 +477,15 @@ class FakePaymentProvider:
         return self.status if self.status_query is None else self.status_query
 
     async def refund(self, provider_payment_id: str, amount: Money) -> ProviderResult:
-        # Сумма возврата здесь не влияет на результат: возврат всегда полный и
-        # успешный. Настраиваемые исходы для refund появятся вместе с T-2.6.
+        # Сумма возврата не влияет на результат: возврат по контракту порта
+        # (T-2.2) всегда полный. Отказ настраивается отдельным полем, как у
+        # create/get_status, — одним исключением на весь провайдер нельзя
+        # выразить «возврат прошёл, а чтение упало» и наоборот.
         del amount
+        self._journal.record('provider.refund')
+        await self._sleep()
+        if self.refund_error is not None:
+            raise self.refund_error
         return ProviderResult(
             provider_payment_id=f'refund-{provider_payment_id}',
             status=ProviderStatus.REFUNDED,
@@ -528,17 +566,24 @@ class SagaEnvironment:
         error: Exception | None = None,
         status_query: ProviderStatus | None = None,
         status_query_error: Exception | None = None,
+        delay: float = 0.0,
     ) -> Self:
-        """Собирает окружение; ``status``/``error`` задают исход провайдера."""
+        """Собирает окружение.
+
+        ``status``/``error`` задают исход провайдера, ``delay`` — паузу его
+        ответов; часы и сон окружения общие, поэтому задержка провайдера
+        двигает то же время, что и наблюдение (T-2.8).
+        """
         journal = Journal()
         database = InMemoryDatabase()
         uow_factory = FakeUnitOfWorkFactory(database=database, journal=journal)
         clock = FakeClock()
+        sleeper = FakeSleeper(clock)
         return cls(
             database=database,
             journal=journal,
             clock=clock,
-            sleeper=FakeSleeper(clock),
+            sleeper=sleeper,
             lock_manager=FakeLockManager(journal=journal),
             idempotency_store=FakeIdempotencyStore(journal=journal),
             event_publisher=RecordingEventPublisher(journal=journal),
@@ -550,6 +595,8 @@ class SagaEnvironment:
                 uow_factory=uow_factory,
                 status_query=status_query,
                 status_query_error=status_query_error,
+                delay=delay,
+                sleeper=sleeper,
             ),
         )
 

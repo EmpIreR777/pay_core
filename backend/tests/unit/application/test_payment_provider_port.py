@@ -160,7 +160,7 @@ class _FakePaymentProvider:
 
     Это именно заглушка формы, а не рабочий фейк: аргументы лишь проверяются и
     участвуют в идентификаторе операции, никакой настраиваемости и состояния нет —
-    полноценный ``FakePaymentProvider`` (success/failure/delay) появится в T-2.9.
+    рабочий ``FakePaymentProvider`` (success/failure/delay) живёт в ``tests/fakes.py`` (T-2.9).
     """
 
     async def create_payment(
