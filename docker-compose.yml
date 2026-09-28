@@ -183,6 +183,10 @@ services:
       # Collector экспортирует трейсы в Jaeger по OTLP — ждём готовности Jaeger.
       jaeger:
         condition: service_healthy
+      # Логи уходят в Loki по OTLP/HTTP. Ждём его, чтобы не потерять
+      # первые порции телеметрии на старте стенда.
+      loki:
+        condition: service_healthy
     volumes:
       - ./otel_collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     environment:
@@ -268,6 +272,35 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # Loki — хранилище логов приложений (приём по нативному OTLP, :3100/otlp)
+  #
+  # Логи приходят из Collector'а, а не напрямую из приложения — тот же
+  # принцип, что у трейсов и метрик: приложение не знает про бэкенды.
+  # В отличие от Jaeger, здесь данные ЖИВУТ НА ДИСКЕ (том loki-data),
+  # потому что логи — это то, по чему разбирают инцидент постфактум.
+  # ---------------------------------------------------------------------------
+  loki:
+    <<: *service-defaults
+    image: grafana/loki:3.5.12
+    container_name: pay-loki
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./infra/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      # Том с чанками, индексами и кэшем. Без него логи пропали бы
+      # при каждом `docker compose down`.
+      - loki-data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    # /ready становится 200 только после того, как Loki закончила
+    # инициализацию схемы и реально готова принимать записи.
+    healthcheck:
+      test: ["CMD", "/busybox/wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
   # Grafana — дашборды метрик
   # ---------------------------------------------------------------------------
   grafana:
@@ -276,6 +309,8 @@ services:
     container_name: pay-grafana
     depends_on:
       prometheus:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     environment:
       # Логин для локальной разработки. Продакшн-значения — только через ENV.
@@ -310,4 +345,5 @@ volumes:
   redis-data:
   kafka-data:
   prometheus-data:
+  loki-data:
   grafana-data:

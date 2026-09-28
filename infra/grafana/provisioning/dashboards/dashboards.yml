@@ -28,4 +28,8 @@ providers:
     allowUiUpdates: true
     options:
       path: /etc/grafana/provisioning/dashboards
+      # ОДИН дашборд — одна папка. Подкаталоги infrastructure/ и services/
+      # в репозитории заводили лишние папки в UI Grafana, в которых
+      # половина дашбордов не открывалась. Разделение по смыслу сделано
+      # строками-разделителями (row-панелями) внутри самого JSON.
       foldersFromFilesStructure: false

@@ -1,52 +1,11 @@
 {
-  "uid": "paycore-otel-overview",
-  "title": "Pay Core — OTel Pipeline Overview",
-  "tags": [
-    "pay-core",
-    "observability",
-    "t-0.8"
-  ],
-  "timezone": "browser",
-  "schemaVersion": 39,
-  "version": 1,
-  "refresh": "15s",
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "graphTooltip": 1,
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "templating": {
-    "list": [
-      {
-        "name": "datasource",
-        "label": "Prometheus",
-        "type": "datasource",
-        "query": "prometheus",
-        "current": {},
-        "hide": 0,
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false
-      }
-    ]
-  },
+  "id": null,
+  "links": [],
   "panels": [
     {
       "type": "row",
@@ -59,13 +18,23 @@
       },
       "id": 100,
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "description": "Раздел 1. Подробности — в поле _section этого же JSON. Задача: T-0.8 (docs/plan/epic-00-bootstrap/plan.md)",
+      "_section": {
+        "number": "1",
+        "name": "Приложение: smoke-зонд",
+        "proves": "Транспорт «приложение -> Collector -> Prometheus» живой: данные не теряются между OTel SDK и хранилищем.",
+        "source": "backend/scripts/otel_smoke.py, запуск: make otel-smoke (в каталоге backend/)",
+        "expected": "После каждого прогона счётчик растёт ровно на 1. Не растёт — сломан транспорт, а не приложение.",
+        "gotchas": "График «лесенкой» из единиц — НОРМА, а не баг: зонд одноразовый, каждый запуск создаёт новый service.instance.id, а значит новую серию. Так накапливается кардинальность.",
+        "tasks": "T-0.8 (docs/plan/epic-00-bootstrap/plan.md)"
+      }
     },
     {
       "id": 1,
       "type": "timeseries",
       "title": "Прогоны зонда (counter) — +1 за каждый make otel-smoke",
-      "description": "Счётчик paycore_smoke_probe_count_total. Collector дописывает суффикс _total монотонным суммам. Значение растёт только при запуске зонда — это нормально, а не «зависание».",
+      "description": "Счётчик paycore_smoke_probe_count_total. Collector дописывает суффикс _total для монотонных сумм, поэтому в PromQL имя метрики ищется регуляркой {__name__=~\"paycore_smoke_probe_count.*\"}.\n\nКАК ЧИТАТЬ: каждый make otel-smoke добавляет ровно 1. Прыжок на 2+ за один запуск = зонд отработал дважды (проверь историю команд).\n\nТРЕВОГА: значение не растёт после прогона — транспорт не доходит.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -128,7 +97,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Скорость прогонов: rate(...[1m])",
-      "description": "Сколько раз в секунду зонд отправлял метрику. Ненулевое значение = зонд активен прямо сейчас.",
+      "description": "rate(...[1m]) — сколько раз в секунду зонд писал метрику за последнюю минуту.\n\nКАК ЧИТАТЬ: у одноразового зонда значение держится около нуля и всплескивает на секунду в момент прогона. Постоянно ненулевое = кто-то гоняет зонд в цикле (проверь cron/CI).\n\nТРЕВОГА: пики совпадают, но счётчик слева не растёт — rate считает окно, а значение обнулилось, значит был рестарт Collector'а.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -198,13 +167,23 @@
       },
       "id": 101,
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "description": "Раздел 2. Подробности — в поле _section этого же JSON. Задача: T-0.7 (otel_collector/config.yaml)",
+      "_section": {
+        "number": "2",
+        "name": "Collector: приём и fan-out",
+        "proves": "Главный вопрос стенда: данные действительно проходят через Collector, а не мимо него. Сравниваем «принято» и «отправлено».",
+        "source": "Self-метрики Collector'а с :8888 — НЕ с :8889. Разница принципиальна: :8889 отдаёт телеметрию приложений, :8888 — телеметрию самого Collector'а.",
+        "expected": "Обе линии идут внахлёст. Устойчивое расхождение = потери в конвейере.",
+        "gotchas": "Левая растёт, правая стоит -> Jaeger недоступен: экспортёр копит батчи в sending_queue и через max_elapsed_time=60s начнёт отбрасывать. Смотрите раздел 3, панель «Очередь отправки в Jaeger».",
+        "tasks": "T-0.7 (otel_collector/config.yaml)"
+      }
     },
     {
       "id": 3,
       "type": "timeseries",
       "title": "Принято vs отправлено (spans → Jaeger)",
-      "description": "Левая линия — сколько span'ов Collector принял на :4317. Правая — сколько отправил в Jaeger. Устойчивое расхождение = потери в конвейере (в норме линии идут внахлёст).",
+      "description": "Ключевая пара всего стенда. Левая линия — сколько span'ов Collector принял на :4317 (otelcol_receiver_accepted_spans). Правая — сколько отправил в Jaeger (otelcol_exporter_sent_spans).\n\nКАК ЧИТАТЬ: линии должны идти внахлёст. Расхождение в пределах нескольких точек — норма, это батчинг (batch: timeout 5s).\n\nТРЕВОГА: левая растёт, правая стоит = Jaeger недоступен. Экспортёр копит в sending_queue (смотрите раздел 3) и через max_elapsed_time=60s начнёт отбрасывать батчи — трейсы будут теряться безвозвратно.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -277,7 +256,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Метрики: принято vs отправлено (metrics → :8889)",
-      "description": "Аналогично для метрик: receiver принял точки, prometheus-экспортёр отдал их на :8889 для scrape. Это ровно тот путь, который проверяет задача T-0.8.",
+      "description": "То же для метрик: receiver принял точки данных, prometheus-экспортёр отдал их на :8889, откуда их забрал Prometheus.\n\nКАК ЧИТАТЬ: обе линии внахлёст. В отличие от трейсов, метрики никуда не исчезают после доставки — Prometheus хранит их в TSDB 7 дней.\n\nТРЕВОГА: расхождение = экспортёр не успевает публиковать. Проверь metric_expiration: с его дефолтом 5m одноразовые метрики исчезали бы с :8889 через 5 минут (у нас поднято до 1h).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -357,13 +336,23 @@
       },
       "id": 102,
       "collapsed": false,
-      "panels": []
+      "panels": [],
+      "description": "Раздел 3. Подробности — в поле _section этого же JSON. Задача: T-0.7 (memory_limiter, sending_queue)",
+      "_section": {
+        "number": "3",
+        "name": "Здоровье Collector'а",
+        "proves": "Collector не упирается в память и успевает отдавать батчи бэкендам.",
+        "source": "Self-метрики с :8888 (otelcol_process_*, otelcol_exporter_queue_size)",
+        "expected": "heap ~30 МБ при лимите 384 МиБ. RSS выше heap — НОРМА: Go не возвращает освобождённые блоки ОС. Утечки нет, пока heap плоский.",
+        "gotchas": "Рост heap = утечка. Рост queue_size = бэкенд не отвечает. Uptime сбросился = был рестарт, ищи причину в docker logs pay-otel-collector.",
+        "tasks": "T-0.7 (memory_limiter, sending_queue)"
+      }
     },
     {
       "id": 5,
       "type": "timeseries",
       "title": "Память Collector'а: реально занято vs удерживается процессом",
-      "description": "Нижняя линия (heap) — сколько памяти занято НА САМОМ ДЕЛЕ: живые объекты Collector'а. Вот это и есть здоровье системы.\nВерхняя линия (RSS) — сколько памяти процесс ДЕРЖИТ у себя: Go забирает блоки у ОС и не отдаёт сразу (защита от фрагментации), поэтому это всегда больше реально занятого. Само по себе безвредно.\nПунктир — лимит memory_limiter (384 МиБ). Если к нему приблизится ЛИНИЯ heap, Collector начнёт отбрасывать телеметрию. В норме heap держится десятки МиБ и не растёт со временем.",
+      "description": "Нижняя линия (heap_alloc) — сколько памяти занято НА САМОМ ДЕЛЕ: живые объекты Collector'а. Верхняя (memory_rss) — сколько удерживает процесс. Пунктир — лимит memory_limiter 384 МиБ.\n\nКАК ЧИТАТЬ: RSS ВСЕГДА выше heap, и это НОРМА. Go не возвращает освобождённые блоки операционной системе. Реальная утечка видна только по растущему heap.\n\nТРЕВОГА: heap упирается в пунктир — memory_limiter начнёт отказывать в приёме (otelcol_processor_refused_spans) и данные потеряются. При 20 прогонах зонда heap вырос 25 -> 30 МБ, затем стабилизировался: GC работает, утечки нет.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -534,7 +523,7 @@
       "id": 7,
       "type": "stat",
       "title": "Очередь отправки в Jaeger",
-      "description": "Сколько батчей лежит в очереди экспортёра. Устойчивый рост = Jaeger недоступен или не успевает.",
+      "description": "Сколько батчей лежит в очереди экспорта в Jaeger (otelcol_exporter_queue_size). Норма — ноль.\n\nКАК ЧИТАТЬ: кратковременные единицы допустимы при активной отправке. Устойчивый ненулевой уровень = бэкенд не успевает или не отвечает.\n\nТРЕВОГА: очередь растёт и упирается в queue_size=2048. Дальше экспортёр начнёт терять трейсы. Первое, что проверить: жив ли Jaeger.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -595,7 +584,7 @@
       "id": 8,
       "type": "stat",
       "title": "Всего span'ов доставлено в Jaeger",
-      "description": "Накопительный счётчик с момента старта Collector'а.",
+      "description": "Накопительный счётчик доставленных span'ов с момента старта Collector'а (otelcol_exporter_sent_spans).\n\nКАК ЧИТАТЬ: должен расти на 2 за каждый make otel-smoke (корневой span + дочерний).\n\nТРЕВОГА: значение обнулилось = Collector перезапустился. Суммарное количество за всю историю стенда смотрите в Prometheus с функцией increase() за нужный интервал.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -639,7 +628,7 @@
       "id": 9,
       "type": "stat",
       "title": "Uptime Collector'а",
-      "description": "Сколько секунд Collector работает без перезапуска. Красный = только что перезапустился или падает и перезапускается по кругу.",
+      "description": "Сколько секунд Collector работает без перезапуска (otelcol_process_uptime).\n\nКАК ЧИТАТЬ: растёт линейно. В нашем стенде это ещё и индикатор устаревших бинд-маунтов: на macOS замена файла конфига на хосте разрывает бинд-маунт внутри работающего контейнера, и Collector надо пересоздавать (docker compose up -d --force-recreate).\n\nТРЕВОГА: сброс = был рестарт. Ищите причину в docker logs.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -691,6 +680,729 @@
         "colorMode": "value",
         "textMode": "value"
       }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 103,
+      "panels": [],
+      "title": "📝 Логи приложений (Loki) — третий сигнал телеметрии",
+      "type": "row",
+      "description": "Раздел 4. Подробности — в поле _section этого же JSON. Задача: T-0.9; частично T-12.10 (structlog с trace_id в теле сообщения)",
+      "_section": {
+        "number": "4",
+        "name": "Логи приложений (Loki)",
+        "proves": "Третий сигнал телеметрии доходит до Loki. Логи — единственный сигнал, который ПЕРЕЖИВАЕТ рестарт контейнеров: том loki-data и retention 7d, тогда как трейсы в Jaeger живут только в RAM.",
+        "source": "app --OTLP--> Collector --otlp_http/loki--> loki:3100/otlp/v1/logs",
+        "expected": "После make otel-smoke появляется строка «paycore otel smoke probe log record», график активности её показывает.",
+        "gotchas": "ДВА МЕСТА, ГДЕ ЛОВИТСЯ ОШИБКА:\n  1) Loki ЗАПРЕЩАЕТ пустую совместимость. Запросы {service_name=~\".*\"} и {} дают parse error — нужен минимум \".+\".\n  2) Переменная $service НЕ вычисляется (label_values пустые), поэтому в ${service:regex} ушла бы пустота -> {service_name=~\"\"} -> снова parse error. Отсюда жёсткий литерал \".+\" вместо переменной.\nФильтр по сервису — двойной клик по имени потока прямо в панели.",
+        "tasks": "T-0.9; частично T-12.10 (structlog с trace_id в теле сообщения)"
+      }
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Поток логов из Loki по всем сервисам. Запрос жёстко задан как {service_name=~\".+\"} — НЕ через переменную.\n\nПОЧЕМУ ЛИТЕРАЛ, А НЕ $service: переменная не вычисляется (label_values возвращает пустые options), и в ${service:regex} ушла бы пустота -> {service_name=~\"\"} -> Loki отвечает parse error. Минимум, который Loki принимает, — \".+\" (одна или более НЕПУСТЫХ совместимостей). Запросы {service_name=~\".*\"} и {} Loki отвергает.\n\nКАК ЧИТАТЬ: клик по строке раскрывает детали (labels и structured metadata). Ссылки «лог -> трейс» появятся после T-12.10, когда приложение начнёт писать trace_id в ТЕЛО сообщения — сейчас trace_id лежит в structured metadata и не ищется в LogQL.\n\nФильтр по сервису: двойной клик по имени потока прямо в панели.\n\nТРЕВОГА: пусто при работающем приложении = логи идут мимо Collector. Проверь otelcol_exporter_sent_log_records на :8888.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 16,
+        "x": 0,
+        "y": 26
+      },
+      "id": 104,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "pluginVersion": "13.0.9",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{service_name=~\".+\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Логи: $service",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "count_over_time за 5 минут — сколько логов поступает в Loki.\n\nКАК ЧИТАТЬ: у текущего стенда это «ступеньки» в моменты make otel-smoke: зонд пишет ровно одну запись за прогон. Непрерывная линия появится, когда заработает настоящее приложение.\n\nТРЕВОГА: линия упала в ноль при живом приложении = потеря логов в конвейере. Ищи раздел 2: разошлись «принято» и «отправлено».",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 16,
+        "y": 26
+      },
+      "id": 105,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(count_over_time({service_name=~\".+\"}[5m]))",
+          "legendFormat": "логов / 5 мин",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Активность логов",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 1200,
+      "panels": [],
+      "title": "💳 Платежи — бизнес-метрики (T-12.8)",
+      "type": "row",
+      "description": "Раздел 5. Подробности — в поле _section этого же JSON. Задача: T-12.8 (docs/plan/epic-12-observability/plan.md)",
+      "_section": {
+        "number": "5",
+        "name": "Платежи — бизнес-метрики",
+        "proves": "Поведение бизнес-логики платёжного шлюза.",
+        "source": "Метрики приложения, инструменты заводит T-12.8",
+        "expected": "ПОКА ПУСТЫЕ — это ожидаемо, а не поломка. Приложение ещё не инструментировано, метрики в коде не заведены.",
+        "gotchas": "Пороги осмысленные, а не дефолтные: outbox жёлтый от 10 (копятся записи), красный от 100. Ошибки провайдера — красный от ОДНОГО: любой сбой ЮKassa это инцидент. Блокировка — жёлтый от 100 мс, красный от 1 с: высокая конкуренция за один аккаунт.",
+        "tasks": "T-12.8 (docs/plan/epic-12-observability/plan.md)"
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Счётчик созданных платежей (payments_created_total, T-12.8).\n\nКАК ЧИТАТЬ: растёт на 1 при каждом успешном создании платежа. Отказы и ошибки сюда НЕ попадают — для них смотрите «Ошибки провайдера».\n\nПУСТО ПОКА: инструмент ещё не заведён в коде (T-12.8). Это ожидаемо.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 39
+      },
+      "id": 1201,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(payments_created_total{service_name=~\"$service:regex\"})",
+          "legendFormat": "всего",
+          "refId": "A"
+        }
+      ],
+      "title": "Платежей создано",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Доля повторов по idempotency_key: rate(idempotency_hits_total) делённая на rate(payments_created_total). clamp_min в знаменателе защищает от деления на ноль в паузах.\n\nКАК ЧИТАТЬ: норма — единицы процентов. Это НЕ ошибка: клиент законно повторяет запрос после сетевого сбоя, и шлюз должен отдать тот же результат, а не создать дубль.\n\nПОРОГИ: жёлтый от 10% — много ретраев (проблема сети у клиента); красный от 30% — стоит искать баг в обработке ключей.\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 39
+      },
+      "id": 1202,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(idempotency_hits_total[5m])) / clamp_min(sum(rate(payments_created_total[5m])), 1e-9)",
+          "legendFormat": "доля",
+          "refId": "A"
+        }
+      ],
+      "title": "Idempotency hits",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Сколько записей outbox ждут публикации в Kafka (outbox_pending_count, T-12.8). Транзакционная гарантия: бизнес-строка и событие пишутся вместе, поэтому «зависшая» запись означает, что воркер не опубликовал её.\n\nКАК ЧИТАТЬ: в норме значение колеблется около нуля. Плато на ненулевом уровне = воркер отстаёт или упал.\n\nПОРОГИ: жёлтый от 10, красный от 100.\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 39
+      },
+      "id": 1203,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(outbox_pending_count{service_name=~\"$service:regex\"})",
+          "legendFormat": "в очереди",
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox в очереди",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "rate(provider_errors_total[5m]) — ошибок в секунду при обращении к платёжному провайдеру (T-12.8).\n\nПОРОГ: красный от ОДНОГО. В отличие от прочих панелей блока, здесь нет «жёлтой зоны»: сбой внешнего провайдера — это инцидент, а не повод ждать.\n\nКАК ЧИТАТЬ: всплеск на несколько секунд с возвратом к нулю = кратковременный сбой на стороне ЮKassa. Устойчивое ненулевое значение = проблема системная, проверяйте логи раздела 4.\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 39
+      },
+      "id": 1204,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(provider_errors_total[5m]))",
+          "legendFormat": "ошибок/сек",
+          "refId": "A"
+        }
+      ],
+      "title": "Ошибки провайдера",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "p95 оптимистичной блокировки аккаунта: histogram_quantile(0.95) по гистограмме lock_acquisition_duration_seconds (T-12.8).\n\nКАК ЧИТАТЬ: сколько времени платёж ждал, пока другие операции того же аккаунта завершались. Быстро — норма: блокировка снимается за миллисекунды.\n\nПОРОГИ: жёлтый от 100 мс, красный от 1 с. Долгое ожидание = высокая конкуренция за один аккаунт (один клиент долбит создание платежей) или зависшая транзакция.\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 39
+      },
+      "id": 1205,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lock_acquisition_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "title": "Блокировка аккаунта (p95)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "id": 1210,
+      "panels": [],
+      "title": "📈 Динамика",
+      "type": "row",
+      "description": "Раздел 6. Подробности — в поле _section этого же JSON. Задача: T-12.8",
+      "_section": {
+        "number": "6",
+        "name": "Динамика",
+        "proves": "Нагрузка и латентность во времени.",
+        "source": "Метрики приложения (T-12.8)",
+        "expected": "Пока пусто, см. раздел 5.",
+        "gotchas": "RPS и латентность читаются ВМЕСТЕ. RPS вырос, p95 в норме = шлюз выдержал нагрузку. RPS тот же, p99 взлетел = деградация на отдельных операциях (обычно блокировки или провайдер).",
+        "tasks": "T-12.8"
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "rate(payments_created_total[5m]) — сколько платежей в секунду.\n\nКАК ЧИТАТЬ: смотрите В ПАРЕ с латентностью справа. RPS вырос, p95 в норме = шлюз выдержал нагрузку. RPS ровный, p99 взлетел = деградация на отдельных операциях, а не нагрузочная проблема.\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
+      "id": 1211,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(payments_created_total[5m]))",
+          "legendFormat": "платежей/сек",
+          "refId": "A"
+        }
+      ],
+      "title": "RPS платежей",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "p50 / p95 / p99 длительности создания платежа через histogram_quantile по payment_creation_duration_seconds_bucket.\n\nКАК ЧИТАТЬ: p50 — типичный случай, p95 — «худшие 5%», p99 — хвост. Нормальное расстояние p50 -> p95 -> p99; если p99 отрывается сильнее остальных, ищите тяжёлые сценарии (блокировки, вызовы провайдера).\n\nПУСТО ПОКА: T-12.8 не сделан.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 45
+      },
+      "id": 1212,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(payment_creation_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(payment_creation_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(payment_creation_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Латентность создания платежа",
+      "type": "timeseries"
     }
-  ]
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "observability",
+    "pay-core",
+    "t-0.8",
+    "t-0.9",
+    "t-12.8"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "loki"
+        },
+        "definition": "label_values(service_name)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Сервис",
+        "multi": true,
+        "name": "service",
+        "options": [],
+        "query": {
+          "query": "label_values(service_name)",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": [
+          {
+            "name": "regex",
+            "type": "custom",
+            "value": ".+"
+          },
+          {
+            "name": "pipe",
+            "type": "custom",
+            "value": "|",
+            "multi": true,
+            "delimiter": ","
+          },
+          {
+            "name": "pipe_without_spaces",
+            "type": "custom",
+            "value": "|",
+            "multi": true,
+            "delimiter": " "
+          },
+          {
+            "name": "glob",
+            "type": "custom",
+            "value": "a{a,b}",
+            "delimiter": ","
+          }
+        ],
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Pay Core — OTel Pipeline Overview",
+  "uid": "paycore-otel-overview",
+  "version": 1,
+  "weekStart": "",
+  "_readme": "Pay Core — OTel Pipeline Overview\n\nЕДИНЫЙ дашборд на всё приложение: инфраструктура телеметрии + бизнес-метрики.\nРазделение на разделы сделано row-разделителями, а не отдельными файлами:\nв UI Grafana должен быть один дашборд, иначе ссылки ведут в никуда.\n\nТРИ СИГНАЛА ТЕЛЕМЕТРИИ И КУДА ОНИ ИДУТ:\n  traces   -> Jaeger   (UI :16686)  — ТОЛЬКО в RAM, теряются при рестарте\n  metrics  -> Prometheus (:9090)     — TSDB в томе, retention 7d\n  logs     -> Loki     (UI :3100/ui) — TSDB в томе, retention 7d, ПЕРЕЖИВАЮТ рестарт\n\nПОТОК ДАННЫХ (приложение не знает ни про Jaeger, ни про Prometheus, ни про Loki):\n  app --OTLP--> otel-collector (:4317)\n                  |-- otlp_grpc/jaeger --> jaeger:4317\n                  |-- prometheus        --> :8889 <-- Prometheus скрейпит\n                  +-- otlp_http/loki    --> loki:3100/otlp/v1/logs\n\nПОЧЕМУ НЕТ БЛОКА С EXEMPLARS (переход «из графика в трейс»):\n  Баг upstream, а не наша ошибка. OTel SDK exemplar создаёт и шлёт,\n  Collector получает, но экспортёр `prometheus` в contrib 0.161.0 их\n  не отдаёт. Подтверждено изолированным стендом и issue\n  open-telemetry/opentelemetry-collector-contrib#40424 (closed as stale).\n  Флаг --enable-feature=exemplar-storage НЕ поможет: хранить нечего.\n\nЧИТАТЬ ОШИБКУ ПАНЕЛЕЙ:\n  Панель показывает «No data» — либо метрики ещё не заведены в коде\n  (бизнес-блоки ждут T-12.8), либо упал транспорт. Отличать помогает\n  раздел «Collector»: там видно, дошло ли что-то до приёмника.\n\nПОЛЕЗНЫЕ АДРЕСА:\n  Grafana   http://localhost:3000/d/paycore-otel-overview\n  Loki UI   http://localhost:3100/ui/        (со слешем!)\n  Jaeger    http://localhost:16686\n  Prometheus http://localhost:9090/targets   (все 3 job должны быть up)\n  Collector http://localhost:8889/metrics    (телеметрия приложений)\n  Collector http://localhost:8888/metrics    (self-метрики otelcol_*)\n"
 }
