@@ -12,6 +12,7 @@ from src.core_service.application.dto.payment import (
     CreatePaymentInput,
     CreatePaymentOutput,
     GetPaymentInput,
+    GetPaymentOutput,
 )
 from src.core_service.application.ports.idempotency_store import MAX_IDEMPOTENCY_KEY_LENGTH
 from src.core_service.application.ports.payment_provider import ProviderResult, ProviderStatus
@@ -23,6 +24,7 @@ __all__ = (
     'CreatePaymentInput',
     'CreatePaymentOutput',
     'GetPaymentInput',
+    'GetPaymentOutput',
     'ProviderResult',
     'ProviderStatus',
 )

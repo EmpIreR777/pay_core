@@ -30,7 +30,6 @@ from typing import Self
 from src.core_service.domain.exceptions import (
     InvalidIdentifierError,
     InvalidTransition,
-    InvalidValueError,
 )
 from src.core_service.domain.validation import (
     require_min_int,
@@ -45,6 +44,7 @@ from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import (
     ALLOWED_TRANSITIONS,
     PaymentStatus,
+    require_time_order,
 )
 from src.core_service.domain.versioning import INITIAL_VERSION, MIN_VERSION
 
@@ -91,8 +91,7 @@ class Payment:
         effective_created_at = require_utc(created_at, 'created_at') if created_at is not None else now
         effective_updated_at = require_utc(updated_at, 'updated_at') if updated_at is not None else effective_created_at
 
-        if effective_updated_at < effective_created_at:
-            raise InvalidValueError('updated_at не может предшествовать created_at')
+        require_time_order(effective_created_at, effective_updated_at)
 
         self._id: PaymentId = payment_id
         self._from_account_id: AccountId = from_account_id

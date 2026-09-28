@@ -53,20 +53,14 @@ from src.core_service.application.ports.event_publisher import EventPublisher
 from src.core_service.application.ports.idempotency_store import IdempotencyRecord, IdempotencyStore
 from src.core_service.application.ports.lock_manager import ACCOUNT_LOCK_RESOURCE_PREFIX, LockManager
 from src.core_service.application.ports.payment_provider import (
-    TERMINAL_PROVIDER_STATUSES,
     PaymentProvider,
     ProviderResult,
-    ProviderStatus,
 )
 from src.core_service.application.ports.unit_of_work import UnitOfWork
+from src.core_service.application.use_cases.payment_sync import apply_provider_status
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
-from src.core_service.domain.events.payment import (
-    PaymentCreated,
-    PaymentFailed,
-    PaymentRefunded,
-    PaymentSettled,
-)
+from src.core_service.domain.events.payment import PaymentCreated
 from src.core_service.domain.exceptions import DuplicateOperation, EntityNotFoundError
 from src.core_service.domain.value_objects.identifiers import PaymentId
 
@@ -79,11 +73,6 @@ IDEMPOTENCY_RESERVATION_TTL_SECONDS: Final[int] = 300
 #: Сколько хранится сохранённый ответ (сутки): за это время клиентские ретраи
 #: после обрыва сети находят тот же платёж, а не создают новый.
 IDEMPOTENCY_RECORD_TTL_SECONDS: Final[int] = 86_400
-
-#: Причина отказа, которую сценарий пишет в платёж и в ``PaymentFailed``. Свой
-#: текст провайдера сюда не попадает намеренно: разбор вокабуляра шлюза — дело
-#: адаптера, а не ядра.
-PROVIDER_REJECTION_REASON: Final[str] = 'Платёж отклонён платёжным провайдером'
 
 
 def _request_hash(data: CreatePaymentInput) -> str:
@@ -282,7 +271,13 @@ class CreatePaymentUseCase:
     async def _apply_provider_result(self, payment: Payment, provider_result: ProviderResult) -> CreatePaymentOutput:
         """Переводит платёж в статус, соответствующий ответу провайдера (шаг 5).
 
-        Платеж перечитывается в новой транзакции: между шагами прошло время и
+        Само правило перевода и возврата холда живёт в
+        :mod:`application.use_cases.payment_sync` — оно одинаково для создания
+        (T-2.4), чтения с актуализацией (T-2.5) и вебхука (T-2.7). Здесь только
+        оркестрация: открыть транзакцию, применить правило, опубликовать события,
+        закоммитить.
+
+        Платёж перечитывается в новой транзакции: между шагами прошло время и
         внешний вызов, а правила применяются к актуальному состоянию.
 
         Шкалы провайдера и платежа разные, поэтому перевод сделан явно, а не
@@ -301,66 +296,8 @@ class CreatePaymentUseCase:
             # PENDING мы к нему ещё не обращались. Дальше состояние либо
             # остаётся (ждём вебхук), либо становится терминальным.
             stored.process(provider_result.provider_payment_id)
-            events: tuple[DomainEvent, ...]
-            if provider_result.status is ProviderStatus.FAILED:
-                events = await self._reject_payment(uow, stored)
-            elif provider_result.status in TERMINAL_PROVIDER_STATUSES:
-                # SUCCEEDED и REFUNDED: у провайдера операция завершена, у нас
-                # платёж проведён. Статус платежа остаётся SETTLED, а факт
-                # возврата оформляется отдельным событием (T-2.7).
-                stored.settle()
-                events = (
-                    PaymentSettled(
-                        payment_id=stored.id,
-                        from_account_id=stored.from_account_id,
-                        amount=stored.amount,
-                        provider_payment_id=stored.provider_payment_id,
-                    ),
-                )
-            else:
-                # PENDING и PROCESSING: операция ещё в работе, ждём вебхок или
-                # сверку. Терминальный статус выдумывать нельзя.
-                events = ()
+            events = await apply_provider_status(uow, stored, provider_result.status, self._event_publisher)
             return await self._commit_payment_update(stored, uow, events=events)
-
-    async def _reject_payment(self, uow: UnitOfWork, payment: Payment) -> tuple[DomainEvent, ...]:
-        """Отклонённый платёж: возврат списанной суммы и переход в ``FAILED``.
-
-        Бизнес-отказ — единственный исход, в котором мы **точно знаем**, что деньги
-        у провайдера не забраны: шлюз отклонил операцию по существу. Значит, холд,
-        взятый на шаге 3, нужно отпустить, иначе деньги клиента остались бы
-        заморожены навсегда — платёт-то он не получил.
-
-        Возврат идёт **в той же транзакции**, что и терминальный статус: либо
-        вернулись деньги и записался ``FAILED``, либо не произошло ничего. Полумеры
-        («вернули, но статус не записался») невозможны в принципе.
-
-        Повторный возврат исключён статус-машиной: ``FAILED`` терминален, значит
-        второй вебхук или повторный заход не дойдут до этого кода.
-
-        :raises EntityNotFoundError: счёт плательщика исчез из хранилища — вернуть
-            деньги некуда, и это повод упасть, а не «списать в никуда».
-        """
-        account = await uow.accounts.get_for_update(payment.from_account_id)
-        if account is None:
-            raise EntityNotFoundError(f'Счёт плательщика {payment.from_account_id} не найден для возврата средств')
-        account.deposit(payment.amount)
-        await uow.accounts.update(account)
-        payment.fail(PROVIDER_REJECTION_REASON)
-        return (
-            PaymentFailed(
-                payment_id=payment.id,
-                from_account_id=payment.from_account_id,
-                amount=payment.amount,
-                reason=PROVIDER_REJECTION_REASON,
-            ),
-            PaymentRefunded(
-                payment_id=payment.id,
-                from_account_id=payment.from_account_id,
-                refunded_amount=payment.amount,
-                reason=PROVIDER_REJECTION_REASON,
-            ),
-        )
 
     async def _commit_payment_update(
         self,

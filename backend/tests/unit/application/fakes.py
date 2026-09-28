@@ -30,6 +30,7 @@ from src.core_service.application.ports.lock_manager import (
 )
 from src.core_service.application.ports.payment_provider import ProviderResult, ProviderStatus
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
+from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
@@ -372,17 +373,30 @@ class FakePaymentProvider:
         error: Exception | None = None,
         journal: Journal,
         uow_factory: FakeUnitOfWorkFactory | None = None,
+        status_query: ProviderStatus | None = None,
+        status_query_error: Exception | None = None,
     ) -> None:
         self.status = status
         self.error = error
+        # Ответ get_status отделён от ответа create_payment: у сценария чтения
+        # (T-2.5) провайдер сначала принимает платёж, а потом (возможно, другим
+        # вызовом) сообщает, чем всё закончилось. Одно поле на оба ответа не
+        # позволяло бы выразить «создали успешно, а актуализация выявила отказ».
+        self.status_query = status_query
+        self.status_query_error = status_query_error
         self.calls: list[tuple[PaymentId, Money, str]] = []
+        self.status_queries: list[str] = []
         self.open_uow_during_calls: list[bool] = []
+        self.open_uow_during_queries: list[bool] = []
         self._journal = journal
         self._uow_factory = uow_factory
 
     @property
     def call_count(self) -> int:
         return len(self.calls)
+
+    def _is_uow_open(self) -> bool:
+        return self._uow_factory.open_units > 0 if self._uow_factory else False
 
     async def create_payment(
         self,
@@ -392,19 +406,21 @@ class FakePaymentProvider:
         idempotency_key: str,
     ) -> ProviderResult:
         self.calls.append((payment_id, amount, idempotency_key))
-        self.open_uow_during_calls.append(self._uow_factory.open_units > 0 if self._uow_factory else False)
+        self.open_uow_during_calls.append(self._is_uow_open())
         self._journal.record('provider.create_payment')
         if self.error is not None:
             raise self.error
         return ProviderResult(provider_payment_id=f'provider-{payment_id}', status=self.status)
 
     async def get_status(self, provider_payment_id: str) -> ProviderStatus:
-        # Один сценарий на все операции одного провайдера: get_status возвращает
-        # тот же статус, что и create_payment. Этого хватает для проверки
-        # актуализации платежа; аргумент не читается — поведение по нему
-        # настраивается полем self.status.
-        del provider_payment_id
-        return self.status
+        self.status_queries.append(provider_payment_id)
+        self.open_uow_during_queries.append(self._is_uow_open())
+        self._journal.record('provider.get_status')
+        if self.status_query_error is not None:
+            raise self.status_query_error
+        # Если отдельный ответ не задан, провайдер сообщает тот же статус, что и
+        # при создании: этого достаточно для теста «провайдер ещё обрабатывает».
+        return self.status if self.status_query is None else self.status_query
 
     async def refund(self, provider_payment_id: str, amount: Money) -> ProviderResult:
         # Сумма возврата здесь не влияет на результат: возврат всегда полный и
@@ -487,6 +503,8 @@ class SagaEnvironment:
         *,
         status: ProviderStatus = ProviderStatus.PROCESSING,
         error: Exception | None = None,
+        status_query: ProviderStatus | None = None,
+        status_query_error: Exception | None = None,
     ) -> Self:
         """Собирает окружение; ``status``/``error`` задают исход провайдера."""
         journal = Journal()
@@ -500,7 +518,14 @@ class SagaEnvironment:
             idempotency_store=FakeIdempotencyStore(journal=journal),
             event_publisher=RecordingEventPublisher(journal=journal),
             uow_factory=uow_factory,
-            provider=FakePaymentProvider(status=status, error=error, journal=journal, uow_factory=uow_factory),
+            provider=FakePaymentProvider(
+                status=status,
+                error=error,
+                journal=journal,
+                uow_factory=uow_factory,
+                status_query=status_query,
+                status_query_error=status_query_error,
+            ),
         )
 
     def add_account(self, account: Account) -> Account:
@@ -508,11 +533,20 @@ class SagaEnvironment:
         return account
 
     def build_use_case(self) -> CreatePaymentUseCase:
-        """Сценарий, связанный с этим окружением."""
+        """Сценарий создания платежа, связанный с этим окружением."""
         return CreatePaymentUseCase(
             uow_factory=self.uow_factory,
             lock_manager=self.lock_manager,
             idempotency_store=self.idempotency_store,
+            payment_provider=self.provider,
+            event_publisher=self.event_publisher,
+            clock=self.clock,
+        )
+
+    def build_get_use_case(self) -> GetPaymentUseCase:
+        """Сценарий чтения платежа, связанный с этим окружением."""
+        return GetPaymentUseCase(
+            uow_factory=self.uow_factory,
             payment_provider=self.provider,
             event_publisher=self.event_publisher,
             clock=self.clock,

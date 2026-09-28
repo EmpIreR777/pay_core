@@ -10,6 +10,7 @@ from src.core_service.application.dto import (
     CreatePaymentInput,
     CreatePaymentOutput,
     GetPaymentInput,
+    GetPaymentOutput,
 )
 from src.core_service.application.ports import (
     ACCOUNT_LOCK_RESOURCE_PREFIX,
@@ -30,7 +31,7 @@ from src.core_service.application.ports import (
     ProviderStatus,
     UnitOfWork,
 )
-from src.core_service.application.use_cases import CreatePaymentUseCase
+from src.core_service.application.use_cases import CreatePaymentUseCase, GetPaymentUseCase
 
 __all__ = (
     'ACCOUNT_LOCK_RESOURCE_PREFIX',
@@ -46,6 +47,8 @@ __all__ = (
     'DistributedLock',
     'EventPublisher',
     'GetPaymentInput',
+    'GetPaymentOutput',
+    'GetPaymentUseCase',
     'IdempotencyRecord',
     'IdempotencyStore',
     'LockManager',

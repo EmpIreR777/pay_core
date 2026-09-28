@@ -21,9 +21,9 @@ from src.core_service.application.ports.idempotency_store import IdempotencyReco
 from src.core_service.application.ports.payment_provider import ProviderStatus
 from src.core_service.application.use_cases.create_payment import (
     IDEMPOTENCY_RECORD_TTL_SECONDS,
-    PROVIDER_REJECTION_REASON,
     _request_hash,
 )
+from src.core_service.application.use_cases.payment_sync import PROVIDER_REJECTION_REASON
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.exceptions import (
     AccountBlocked,

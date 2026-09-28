@@ -45,6 +45,7 @@ from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import (
     PaymentStatus,
     require_provider_payment_coherence,
+    require_time_order,
 )
 
 
@@ -189,6 +190,77 @@ class CreatePaymentOutput:
                 response.get('provider_payment_id'),
                 'provider_payment_id',
             ),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetPaymentOutput:
+    """Результат чтения платежа.
+
+    Отдельный тип, а не переиспользование ``CreatePaymentOutput``: чтение отдаёт
+    больше, чем создание. Клиенту (и SSE-стриму T-2.8) нужны обе временные метки,
+    счёт-источник и текст причины отказа — иначе UI пришлось бы угадывать, почему
+    платёж ``FAILED`` и когда он последний раз менялся. Дублировать поля «на
+    всякий случай» в том же классе тоже нельзя: у создания часть полей
+    принципиально не заполняется, и лишние ``None`` протекали бы в контракт.
+
+    :param payment_id: идентификатор платежа;
+    :param status: статус на момент чтения (после актуализации у провайдера);
+    :param amount: сумма платежа;
+    :param from_account_id: счёт списания;
+    :param created_at: время создания (UTC);
+    :param updated_at: время последнего изменения статуса (UTC);
+    :param provider_payment_id: идентификатор операции у провайдера, если была;
+    :param failure_reason: причина отказа при ``FAILED``, иначе ``None``;
+    :raises InvalidValueError: некорректный тип/значение поля, рассинхрон статуса
+        и ``provider_payment_id`` либо ``updated_at`` раньше ``created_at``.
+    """
+
+    payment_id: PaymentId
+    status: PaymentStatus
+    amount: Money
+    from_account_id: AccountId
+    created_at: datetime
+    updated_at: datetime
+    provider_payment_id: str | None = None
+    failure_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        require_type(self.payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
+        require_type(self.status, PaymentStatus, 'status')
+        require_positive_money(self.amount, 'amount')
+        require_type(self.from_account_id, AccountId, 'from_account_id', error_type=InvalidIdentifierError)
+        require_utc(self.created_at, 'created_at')
+        require_utc(self.updated_at, 'updated_at')
+        provider_payment_id = require_optional_non_empty_str(self.provider_payment_id, 'provider_payment_id')
+        object.__setattr__(self, 'provider_payment_id', provider_payment_id)
+        object.__setattr__(
+            self,
+            'failure_reason',
+            require_optional_non_empty_str(self.failure_reason, 'failure_reason'),
+        )
+        require_provider_payment_coherence(self.status, provider_payment_id)
+        # Правило «не изменён раньше созданного» — доменное, а не местное: его же
+        # проверяет сущность в своём конструкторе.
+        require_time_order(self.created_at, self.updated_at)
+
+    @classmethod
+    def from_payment(cls, payment: Payment) -> Self:
+        """Собирает результат чтения из сущности платежа.
+
+        :raises InvalidValueError: если сущность нарушает свои же инварианты
+            (например, несогласованные статус и идентификатор операции).
+        """
+        require_type(payment, Payment, 'payment')
+        return cls(
+            payment_id=payment.id,
+            status=payment.status,
+            amount=payment.amount,
+            from_account_id=payment.from_account_id,
+            created_at=payment.created_at,
+            updated_at=payment.updated_at,
+            provider_payment_id=payment.provider_payment_id,
+            failure_reason=payment.failure_reason,
         )
 
 

@@ -10,6 +10,7 @@
 Никакие дальнейшие переходы из них не допускаются.
 """
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Final
 
@@ -97,3 +98,19 @@ def require_provider_payment_coherence(status: PaymentStatus, provider_payment_i
         raise InvalidValueError(f'status={status}: платёж в этом статусе обязан иметь provider_payment_id')
     if status is PaymentStatus.PENDING and provider_payment_id is not None:
         raise InvalidValueError('status=PENDING: до вызова провайдера provider_payment_id должен быть пустым')
+
+
+def require_time_order(created_at: datetime, updated_at: datetime) -> None:
+    """Проверяет, что момент изменения не предшествует моменту создания.
+
+    Правило живёт здесь, рядом с остальными правилами шкалы статусов, потому что
+    оно принадлежит не DTO, а предметной области: платёж не может измениться
+    раньше, чем был создан. Проверяют его и сущность (в конструкторе), и DTO
+    вывода — иначе одно из двух мест перестало бы о нём помнить.
+
+    :param created_at: момент создания (уже проверен как timezone-aware UTC);
+    :param updated_at: момент последнего изменения (в том же формате);
+    :raises InvalidValueError: если ``updated_at`` раньше ``created_at``.
+    """
+    if updated_at < created_at:
+        raise InvalidValueError('updated_at не может предшествовать created_at')
