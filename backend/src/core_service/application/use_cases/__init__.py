@@ -9,6 +9,8 @@
 * ``cancel_payment.py`` — отмена PENDING платежа с возвратом холда (T-2.6)
 * ``handle_provider_webhook.py`` — обработка уведомления провайдера с
   идемпотентностью по ``provider_event_id`` (T-2.7)
+* ``watch_payment.py`` — поток статусов платежа: чтение через T-2.5,
+  повторяющееся до терминального статуса или срока потока (T-2.8)
 * ``payment_sync.py`` — общее правило «ответ провайдера → статус платежа»,
   которым пользуются T-2.4, T-2.5 и вебхук (T-2.7)
 """
@@ -17,5 +19,12 @@ from src.core_service.application.use_cases.cancel_payment import CancelPaymentU
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
 from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
 from src.core_service.application.use_cases.handle_provider_webhook import HandleProviderWebhookUseCase
+from src.core_service.application.use_cases.watch_payment import WatchPaymentUseCase
 
-__all__ = ('CancelPaymentUseCase', 'CreatePaymentUseCase', 'GetPaymentUseCase', 'HandleProviderWebhookUseCase')
+__all__ = (
+    'CancelPaymentUseCase',
+    'CreatePaymentUseCase',
+    'GetPaymentUseCase',
+    'HandleProviderWebhookUseCase',
+    'WatchPaymentUseCase',
+)

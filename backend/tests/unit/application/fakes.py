@@ -33,6 +33,7 @@ from src.core_service.application.use_cases.cancel_payment import CancelPaymentU
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
 from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
 from src.core_service.application.use_cases.handle_provider_webhook import HandleProviderWebhookUseCase
+from src.core_service.application.use_cases.watch_payment import WatchPaymentUseCase
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
@@ -57,6 +58,25 @@ class FakeClock:
 
     def advance(self, delta: timedelta) -> None:
         self._now += delta
+
+
+class FakeSleeper:
+    """Пауза без реального времени: сдвигает часы и запоминает запросы.
+
+    Поток статусов (T-2.8) ограничен сроком по часам. Если бы «сон» не двигал
+    время, наблюдение за платежом, который не меняется, в тесте не закончилось
+    бы никогда — зависший тест вместо честного падения. Поэтому здесь сон — это
+    запись задержки и сдвиг :class:`FakeClock`: время идёт ровно столько,
+    сколько просил сценарий, и проверка срока детерминирована.
+    """
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        self._clock.advance(timedelta(seconds=delay))
 
 
 class Journal:
@@ -493,6 +513,7 @@ class SagaEnvironment:
     database: InMemoryDatabase
     journal: Journal
     clock: FakeClock
+    sleeper: FakeSleeper
     lock_manager: FakeLockManager
     idempotency_store: FakeIdempotencyStore
     event_publisher: RecordingEventPublisher
@@ -512,10 +533,12 @@ class SagaEnvironment:
         journal = Journal()
         database = InMemoryDatabase()
         uow_factory = FakeUnitOfWorkFactory(database=database, journal=journal)
+        clock = FakeClock()
         return cls(
             database=database,
             journal=journal,
-            clock=FakeClock(),
+            clock=clock,
+            sleeper=FakeSleeper(clock),
             lock_manager=FakeLockManager(journal=journal),
             idempotency_store=FakeIdempotencyStore(journal=journal),
             event_publisher=RecordingEventPublisher(journal=journal),
@@ -570,6 +593,19 @@ class SagaEnvironment:
             idempotency_store=self.idempotency_store,
             event_publisher=self.event_publisher,
             clock=self.clock,
+        )
+
+    def build_watch_use_case(self) -> WatchPaymentUseCase:
+        """Сценарий потока статусов, связанный с этим окружением (T-2.8).
+
+        Читает через настоящий сценарий T-2.5, а не через свою копию, поэтому
+        пауза потока идёт по часам окружения, а ожидание — через
+        :class:`FakeSleeper`: время в тесте контролирует тест.
+        """
+        return WatchPaymentUseCase(
+            get_payment=self.build_get_use_case(),
+            clock=self.clock,
+            sleeper=self.sleeper,
         )
 
     def account_balance(self, account_id: AccountId) -> Money:

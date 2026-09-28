@@ -40,6 +40,7 @@ from src.core_service.application.use_cases import (
     CreatePaymentUseCase,
     GetPaymentUseCase,
     HandleProviderWebhookUseCase,
+    WatchPaymentUseCase,
 )
 
 __all__ = (
@@ -72,4 +73,5 @@ __all__ = (
     'ProviderResult',
     'ProviderStatus',
     'UnitOfWork',
+    'WatchPaymentUseCase',
 )
