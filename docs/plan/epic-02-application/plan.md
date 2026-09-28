@@ -555,6 +555,20 @@
     (порт T-2.2 опережает сценарии): фейк теперь честно покрывает все три операции порта, и
     тест это фиксирует.
 
-### [ ] T-2.10. Покрытие application >= 85%
+### [x] T-2.10. Покрытие application >= 85%
 - **DoD:** `pytest --cov=core_service/application` показывает >= 85%.
-- **Подтверждение пользователя:** `[ ]`
+- **Подтверждение пользователя:** `[x]` (подтверждено)
+- **Реализация:**
+  - В Makefile добавлена цель `test-cov-application` (зеркало существующего `test-cov-domain`
+    с `--cov-fail-under=85`) — порог из DoD закреплён в команде, а не живёт в отчёте:
+    `uv run pytest --cov=src/core_service/application --cov-report=term-missing --cov-fail-under=85`.
+- **Проверки:** `make -C backend test-cov-application` →
+  `Required test coverage of 85% reached. Total coverage: 100.00%` — **683 passed**;
+  все 21 модуль `application` — 100% (TOTAL 513 statements, 0 missed).
+- **Нюансы:**
+  - Литеральная команда DoD `pytest --cov=core_service/application` пакет не находит и печатает
+    «No data to report»: пакет живёт под `src/`. Рабочая форма — `--cov=src/core_service/application`,
+    что и закреплено в цели Makefile.
+  - Требование выполнено с запасом (100% против 85%): покрытие держится на уровне, достигнутом
+    ещё в T-2.4 и не опускавшемся с тех пор; цель с `--cov-fail-under` не даст ему упасть
+    молча.
