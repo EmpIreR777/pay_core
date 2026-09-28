@@ -119,25 +119,25 @@ def test_constructor_validates_types() -> None:
     aid = AccountId.new()
     amt = rub('10.00')
 
-    with pytest.raises(InvalidIdentifierError, match='payment_id должен быть PaymentId'):
+    with pytest.raises(InvalidIdentifierError, match='payment_id: ожидается экземпляр PaymentId'):
         Payment(payment_id=uuid4(), from_account_id=aid, amount=amt)  # type: ignore[arg-type]
 
-    with pytest.raises(InvalidIdentifierError, match='from_account_id должен быть AccountId'):
+    with pytest.raises(InvalidIdentifierError, match='from_account_id: ожидается экземпляр AccountId'):
         Payment(payment_id=pid, from_account_id=uuid4(), amount=amt)  # type: ignore[arg-type]
 
-    with pytest.raises(InvalidValueError, match='amount должен быть Money'):
+    with pytest.raises(InvalidValueError, match='amount: ожидается экземпляр Money'):
         Payment(payment_id=pid, from_account_id=aid, amount='10.00')  # type: ignore[arg-type]
 
     with pytest.raises(InvalidAmountError, match='не может быть нулевой'):
         Payment(payment_id=pid, from_account_id=aid, amount=rub('0.00'))
 
-    with pytest.raises(InvalidValueError, match='status должен быть PaymentStatus'):
+    with pytest.raises(InvalidValueError, match='status: ожидается экземпляр PaymentStatus'):
         Payment(payment_id=pid, from_account_id=aid, amount=amt, status='PENDING')  # type: ignore[arg-type]
 
-    with pytest.raises(InvalidValueError, match='version должен быть int'):
+    with pytest.raises(InvalidValueError, match='version: ожидается int'):
         Payment(payment_id=pid, from_account_id=aid, amount=amt, version=True)  # type: ignore[arg-type]
 
-    with pytest.raises(InvalidValueError, match=f'version не может быть меньше {MIN_VERSION}'):
+    with pytest.raises(InvalidValueError, match=f'version: не может быть меньше {MIN_VERSION}'):
         Payment(payment_id=pid, from_account_id=aid, amount=amt, version=0)
 
 
@@ -255,7 +255,7 @@ def test_invalid_transitions_are_rejected_and_do_not_bump_version(
 
 def test_transition_to_rejects_non_payment_status() -> None:
     payment = make_payment(status=PaymentStatus.PENDING)
-    with pytest.raises(InvalidValueError, match='target_status должен быть PaymentStatus'):
+    with pytest.raises(InvalidValueError, match='target_status: ожидается экземпляр PaymentStatus'):
         payment.transition_to('PROCESSING')  # type: ignore[arg-type]
 
 

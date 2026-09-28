@@ -25,13 +25,17 @@
 """
 
 from datetime import UTC, datetime
-from typing import Final, Self
+from typing import Self
 
 from src.core_service.domain.exceptions import (
-    InvalidAmountError,
-    InvalidIdentifierError,
     InvalidTransition,
-    InvalidValueError,
+)
+from src.core_service.domain.validation import (
+    require_min_int,
+    require_optional_non_empty_str,
+    require_payment_fields,
+    require_type,
+    require_utc,
 )
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
@@ -39,24 +43,11 @@ from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import (
     ALLOWED_TRANSITIONS,
     PaymentStatus,
+    require_time_order,
 )
+from src.core_service.domain.versioning import INITIAL_VERSION, MIN_VERSION
 
-#: Начальная версия оптимистичной блокировки (согласована с SQLAlchemy version_id_col).
-INITIAL_VERSION: Final = 1
-
-#: Минимально допустимая версия записи платежа.
-MIN_VERSION: Final = 1
-
-
-def _require_utc(dt: datetime, field_name: str) -> datetime:
-    """Проверяет, что временная метка является timezone-aware в UTC."""
-    if not isinstance(dt, datetime):
-        raise InvalidValueError(f'{field_name}: ожидается datetime, получено {type(dt).__name__}')
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        raise InvalidValueError(f'{field_name}: datetime должен быть timezone-aware (UTC)')
-    if dt.tzinfo.utcoffset(dt) != UTC.utcoffset(dt):
-        raise InvalidValueError(f'{field_name}: временная зона должна быть строго UTC, получено {dt.tzinfo}')
-    return dt
+__all__ = ('INITIAL_VERSION', 'MIN_VERSION', 'Payment')
 
 
 class Payment:
@@ -87,49 +78,25 @@ class Payment:
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
     ) -> None:
-        if not isinstance(payment_id, PaymentId):
-            raise InvalidIdentifierError(f'payment_id должен быть PaymentId, получено {type(payment_id).__name__}')
-        if not isinstance(from_account_id, AccountId):
-            raise InvalidIdentifierError(
-                f'from_account_id должен быть AccountId, получено {type(from_account_id).__name__}'
-            )
-        if not isinstance(amount, Money):
-            raise InvalidValueError(f'amount должен быть Money, получено {type(amount).__name__}')
-        if amount.is_zero:
-            raise InvalidAmountError('Сумма платежа не может быть нулевой')
-
-        if not isinstance(status, PaymentStatus):
-            raise InvalidValueError(f'status должен быть PaymentStatus, получено {type(status).__name__}')
-
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise InvalidValueError(f'version должен быть int, получено {type(version).__name__}')
-        if version < MIN_VERSION:
-            raise InvalidValueError(f'version не может быть меньше {MIN_VERSION}, передано {version}')
-
-        if provider_payment_id is not None and (
-            not isinstance(provider_payment_id, str) or not provider_payment_id.strip()
-        ):
-            raise InvalidValueError('provider_payment_id должен быть непустой строкой или None')
-
-        if failure_reason is not None and (not isinstance(failure_reason, str) or not failure_reason.strip()):
-            raise InvalidValueError('failure_reason должен быть непустой строкой или None')
+        require_payment_fields(payment_id, from_account_id, amount)
+        require_type(status, PaymentStatus, 'status')
+        checked_version = require_min_int(version, 'version', minimum=MIN_VERSION)
+        checked_provider_payment_id = require_optional_non_empty_str(provider_payment_id, 'provider_payment_id')
+        checked_failure_reason = require_optional_non_empty_str(failure_reason, 'failure_reason')
 
         now = datetime.now(UTC)
-        effective_created_at = _require_utc(created_at, 'created_at') if created_at is not None else now
-        effective_updated_at = (
-            _require_utc(updated_at, 'updated_at') if updated_at is not None else effective_created_at
-        )
+        effective_created_at = require_utc(created_at, 'created_at') if created_at is not None else now
+        effective_updated_at = require_utc(updated_at, 'updated_at') if updated_at is not None else effective_created_at
 
-        if effective_updated_at < effective_created_at:
-            raise InvalidValueError('updated_at не может предшествовать created_at')
+        require_time_order(effective_created_at, effective_updated_at)
 
         self._id: PaymentId = payment_id
         self._from_account_id: AccountId = from_account_id
         self._amount: Money = amount
         self._status: PaymentStatus = status
-        self._version: int = version
-        self._provider_payment_id: str | None = provider_payment_id.strip() if provider_payment_id else None
-        self._failure_reason: str | None = failure_reason.strip() if failure_reason else None
+        self._version: int = checked_version
+        self._provider_payment_id: str | None = checked_provider_payment_id
+        self._failure_reason: str | None = checked_failure_reason
         self._created_at: datetime = effective_created_at
         self._updated_at: datetime = effective_updated_at
 
@@ -218,8 +185,7 @@ class Payment:
         :raises InvalidTransition: если переход недопустим правилами статус-машины.
         :raises InvalidValueError: если переданы некорректные аргументы перехода.
         """
-        if not isinstance(target_status, PaymentStatus):
-            raise InvalidValueError(f'target_status должен быть PaymentStatus, получено {type(target_status).__name__}')
+        require_type(target_status, PaymentStatus, 'target_status')
 
         allowed = ALLOWED_TRANSITIONS.get(self._status, frozenset())
         if target_status not in allowed:
@@ -229,19 +195,14 @@ class Payment:
                 f'{sorted(s.value for s in allowed) if allowed else "нет (терминальный статус)"}'
             )
 
-        if provider_payment_id is not None and (
-            not isinstance(provider_payment_id, str) or not provider_payment_id.strip()
-        ):
-            raise InvalidValueError('provider_payment_id должен быть непустой строкой или None')
-
-        if failure_reason is not None and (not isinstance(failure_reason, str) or not failure_reason.strip()):
-            raise InvalidValueError('failure_reason должен быть непустой строкой или None')
+        checked_provider_payment_id = require_optional_non_empty_str(provider_payment_id, 'provider_payment_id')
+        checked_failure_reason = require_optional_non_empty_str(failure_reason, 'failure_reason')
 
         self._status = target_status
-        if provider_payment_id is not None:
-            self._provider_payment_id = provider_payment_id.strip()
-        if failure_reason is not None:
-            self._failure_reason = failure_reason.strip()
+        if checked_provider_payment_id is not None:
+            self._provider_payment_id = checked_provider_payment_id
+        if checked_failure_reason is not None:
+            self._failure_reason = checked_failure_reason
 
         self._updated_at = datetime.now(UTC)
         self._version += 1

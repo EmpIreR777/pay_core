@@ -107,7 +107,7 @@ Observability:
 
 ---
 
-## 📋 Сводный чек-лист сеньорских тем
+## 📋 Сводный чек-лист
 
 - [ ] Clean Architecture с портами и адаптерами
 - [ ] Domain-Driven Design (entities, VOs, events)

@@ -4,22 +4,19 @@
 * ``PaymentSettled`` — платёж успешно проведён внешним провайдером / системой.
 * ``PaymentFailed`` — платёж завершился ошибкой / отклонён.
 * ``PaymentRefunded`` — совершён полный или частичный возврат средств по платежу.
+* ``PaymentCancelled`` — платёж отменён до передачи провайдеру, холд возвращён (T-2.6).
 """
 
 from dataclasses import dataclass
 
 from src.core_service.domain.events.base import DomainEvent
-from src.core_service.domain.exceptions import InvalidValueError
+from src.core_service.domain.validation import (
+    require_non_empty_str,
+    require_optional_non_empty_str,
+    require_payment_fields,
+)
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
 from src.core_service.domain.value_objects.money import Money
-
-
-def _require_type[T](val: object, expected_type: type[T], field_name: str) -> T:
-    if not isinstance(val, expected_type):
-        raise InvalidValueError(
-            f'{field_name}: ожидается экземпляр {expected_type.__name__}, получено {type(val).__name__}'
-        )
-    return val
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -32,9 +29,7 @@ class PaymentCreated(DomainEvent):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _require_type(self.payment_id, PaymentId, 'payment_id')
-        _require_type(self.from_account_id, AccountId, 'from_account_id')
-        _require_type(self.amount, Money, 'amount')
+        require_payment_fields(self.payment_id, self.from_account_id, self.amount)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -48,13 +43,12 @@ class PaymentSettled(DomainEvent):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _require_type(self.payment_id, PaymentId, 'payment_id')
-        _require_type(self.from_account_id, AccountId, 'from_account_id')
-        _require_type(self.amount, Money, 'amount')
-        if self.provider_payment_id is not None and not isinstance(self.provider_payment_id, str):
-            raise InvalidValueError(
-                f'provider_payment_id: ожидается str или None, получено {type(self.provider_payment_id).__name__}'
-            )
+        require_payment_fields(self.payment_id, self.from_account_id, self.amount)
+        object.__setattr__(
+            self,
+            'provider_payment_id',
+            require_optional_non_empty_str(self.provider_payment_id, 'provider_payment_id'),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -68,11 +62,8 @@ class PaymentFailed(DomainEvent):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _require_type(self.payment_id, PaymentId, 'payment_id')
-        _require_type(self.from_account_id, AccountId, 'from_account_id')
-        _require_type(self.amount, Money, 'amount')
-        if not isinstance(self.reason, str):
-            raise InvalidValueError(f'reason: ожидается str, получено {type(self.reason).__name__}')
+        require_payment_fields(self.payment_id, self.from_account_id, self.amount)
+        object.__setattr__(self, 'reason', require_non_empty_str(self.reason, 'reason'))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -86,8 +77,22 @@ class PaymentRefunded(DomainEvent):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _require_type(self.payment_id, PaymentId, 'payment_id')
-        _require_type(self.from_account_id, AccountId, 'from_account_id')
-        _require_type(self.refunded_amount, Money, 'refunded_amount')
-        if self.reason is not None and not isinstance(self.reason, str):
-            raise InvalidValueError(f'reason: ожидается str или None, получено {type(self.reason).__name__}')
+        # Поле у этого события называется refunded_amount, а правило одинаковое,
+        # поэтому передаём значение явно — подпись правила не «помнит» имён полей.
+        require_payment_fields(self.payment_id, self.from_account_id, self.refunded_amount)
+        object.__setattr__(self, 'reason', require_optional_non_empty_str(self.reason, 'reason'))
+
+
+@dataclass(frozen=True, kw_only=True)
+class PaymentCancelled(DomainEvent):
+    """Событие отмены платежа (T-2.6)."""
+
+    payment_id: PaymentId
+    from_account_id: AccountId
+    amount: Money
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        require_payment_fields(self.payment_id, self.from_account_id, self.amount)
+        object.__setattr__(self, 'reason', require_optional_non_empty_str(self.reason, 'reason'))

@@ -8,6 +8,7 @@
 from src.core_service.domain.entities import Account, Payment
 from src.core_service.domain.events import (
     DomainEvent,
+    PaymentCancelled,
     PaymentCreated,
     PaymentFailed,
     PaymentRefunded,
@@ -18,6 +19,7 @@ from src.core_service.domain.exceptions import (
     CurrencyMismatchError,
     DomainError,
     DuplicateOperation,
+    EntityNotFoundError,
     InsufficientFunds,
     InvalidAmountError,
     InvalidCurrencyError,
@@ -49,6 +51,7 @@ __all__ = (
     'DomainError',
     'DomainEvent',
     'DuplicateOperation',
+    'EntityNotFoundError',
     'Identifier',
     'InsufficientFunds',
     'InvalidAmountError',
@@ -59,6 +62,7 @@ __all__ = (
     'Money',
     'NegativeAmountError',
     'Payment',
+    'PaymentCancelled',
     'PaymentCreated',
     'PaymentFailed',
     'PaymentId',

@@ -20,50 +20,26 @@
 проверяет инварианты.
 """
 
-from typing import Final, Self
+from typing import Self
 
 from src.core_service.domain.exceptions import (
     AccountBlocked,
     CurrencyMismatchError,
     InsufficientFunds,
-    InvalidAmountError,
     InvalidIdentifierError,
-    InvalidValueError,
+)
+from src.core_service.domain.validation import (
+    require_min_int,
+    require_money,
+    require_non_zero_money,
+    require_type,
 )
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId
 from src.core_service.domain.value_objects.money import Money
+from src.core_service.domain.versioning import INITIAL_VERSION, MIN_VERSION
 
-#: Версия только что созданного счёта. Совпадает с поведением
-#: SQLAlchemy ``version_id_col``, чтобы расхождений между доменом и БД не было.
-INITIAL_VERSION: Final = 1
-
-#: Ниже этой версии счёт не существует: нулевая версия означала бы, что счёт
-#: «создаётся» прямо сейчас, и проверка версии в UPDATE потеряла бы смысл.
-MIN_VERSION: Final = 1
-
-
-def _require_money(value: object, operation: str) -> Money:
-    """Отсекает «сырые» числа на границе доменного метода.
-
-    ``Money`` внутри гарантирует, что float в баланс не попадёт, но вызвать
-    ``deposit(10)`` всё ещё можно. Ловим это здесь и даём доменную ошибку
-    вместо ``AttributeError`` из глубины реализации.
-    """
-    if not isinstance(value, Money):
-        raise InvalidValueError(f'{operation}: ожидается Money, получено {type(value).__name__}')
-    return value
-
-
-def _require_non_zero(amount: Money, operation: str) -> None:
-    """Запрещает нулевую операцию.
-
-    Ноль — не ошибка ``Money``, но операция на ноль ничего не меняет, а версию
-    увеличит и событие породит. Для финансового шлюза это «платёж на 0 ₽»,
-    который не должен возникать на границе.
-    """
-    if amount.is_zero:
-        raise InvalidAmountError(f'{operation}: сумма не может быть нулевой')
+__all__ = ('INITIAL_VERSION', 'MIN_VERSION', 'Account')
 
 
 class Account:
@@ -86,25 +62,17 @@ class Account:
         :param is_blocked: заблокирован ли счёт;
         :param version: версия для оптимистичной блокировки.
         """
-        if not isinstance(account_id, AccountId):
-            raise InvalidIdentifierError(
-                f'Идентификатор счёта должен быть AccountId, получено {type(account_id).__name__}',
-            )
-        if not isinstance(balance, Money):
-            raise InvalidValueError(f'Баланс должен быть Money, получено {type(balance).__name__}')
-        if not isinstance(is_blocked, bool):
-            # bool — подкласс int, поэтому 0/1 «прошли» бы как False/True
-            # и тихо превратили бы 1 в заблокированный счёт.
-            raise InvalidValueError(f'Признак блокировки должен быть bool, получено {type(is_blocked).__name__}')
-        if isinstance(version, bool) or not isinstance(version, int):
-            raise InvalidValueError(f'Версия должна быть int, получено {type(version).__name__}')
-        if version < MIN_VERSION:
-            raise InvalidValueError(f'Версия счёта должна быть не меньше {MIN_VERSION}, получено {version}')
+        require_type(account_id, AccountId, 'Идентификатор счёта', error_type=InvalidIdentifierError)
+        require_type(balance, Money, 'Баланс')
+        # bool — подкласс int, поэтому 0/1 «прошли» бы как False/True
+        # и тихо превратили бы 1 в заблокированный счёт.
+        require_type(is_blocked, bool, 'Признак блокировки')
+        checked_version = require_min_int(version, 'Версия', minimum=MIN_VERSION)
 
         self._id = account_id
         self._balance = balance
         self._is_blocked = is_blocked
-        self._version = version
+        self._version = checked_version
 
     # --- Создание ---
 
@@ -116,8 +84,7 @@ class Account:
         может выбрать осмысленный ``id`` заранее, а на границе (импорт данных)
         готовый идентификатор передаётся явно.
         """
-        if not isinstance(currency, Currency):
-            raise InvalidValueError(f'Валюта счёта должна быть Currency, получено {type(currency).__name__}')
+        require_type(currency, Currency, 'Валюта счёта')
         return cls(account_id=account_id or AccountId.new(), balance=Money.zero(currency))
 
     # --- Read-only доступ к состоянию ---
@@ -153,22 +120,14 @@ class Account:
 
     def deposit(self, amount: Money) -> None:
         """Пополняет счёт. Знак суммы задаёт метод, а не значение."""
-        operation = 'Пополнение счёта'
-        self._require_operable(operation)
-        checked = _require_money(amount, operation)
-        self._require_same_currency(checked, operation)
-        _require_non_zero(checked, operation)
+        checked = self._checked_operation_amount(amount, 'Пополнение счёта')
 
         self._balance = self._balance + checked
         self._touch()
 
     def withdraw(self, amount: Money) -> None:
         """Списывает средства. Уход баланса в минус — не «овердрафт», а отказ."""
-        operation = 'Списание со счёта'
-        self._require_operable(operation)
-        checked = _require_money(amount, operation)
-        self._require_same_currency(checked, operation)
-        _require_non_zero(checked, operation)
+        checked = self._checked_operation_amount(amount, 'Списание со счёта')
 
         if checked > self._balance:
             raise InsufficientFunds(
@@ -212,6 +171,24 @@ class Account:
         self._touch()
 
     # --- Внутренние проверки инвариантов ---
+    def _checked_operation_amount(self, amount: Money, operation: str) -> Money:
+        """Проверяет, что операция с суммой вообще допустима, и возвращает сумму.
+
+        Четыре условия — «счёт работает, сумма это Money, валюта та же, сумма не
+        нулевая» — одинаковы для пополнения и списания. Держать их в обоих методах
+        означало бы, что однажды пополнение получит четвёртую проверку, а списание
+        — нет, и списание начнёт принимать нулевые суммы. Правило одно, значит и
+        проверка одна.
+
+        :param amount: сумма операции;
+        :param operation: человекочитаемое имя операции для текста ошибки;
+        :returns: проверенную сумму, готовую к применению.
+        """
+        self._require_operable(operation)
+        checked = require_money(amount, operation)
+        self._require_same_currency(checked, operation)
+        require_non_zero_money(checked, operation)
+        return checked
 
     def _require_operable(self, operation: str) -> None:
         if self._is_blocked:
