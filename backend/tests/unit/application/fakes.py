@@ -32,6 +32,7 @@ from src.core_service.application.ports.payment_provider import ProviderResult, 
 from src.core_service.application.use_cases.cancel_payment import CancelPaymentUseCase
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
 from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
+from src.core_service.application.use_cases.handle_provider_webhook import HandleProviderWebhookUseCase
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
@@ -558,6 +559,15 @@ class SagaEnvironment:
         return CancelPaymentUseCase(
             uow_factory=self.uow_factory,
             lock_manager=self.lock_manager,
+            event_publisher=self.event_publisher,
+            clock=self.clock,
+        )
+
+    def build_webhook_use_case(self) -> HandleProviderWebhookUseCase:
+        """Сценарий обработки вебхука, связанный с этим окружением (T-2.7)."""
+        return HandleProviderWebhookUseCase(
+            uow_factory=self.uow_factory,
+            idempotency_store=self.idempotency_store,
             event_publisher=self.event_publisher,
             clock=self.clock,
         )

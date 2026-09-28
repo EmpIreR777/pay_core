@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import Any, Self
 
 from src.core_service.application.ports.idempotency_store import MAX_IDEMPOTENCY_KEY_LENGTH
+from src.core_service.application.ports.payment_provider import ProviderStatus
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.exceptions import InvalidIdentifierError
 from src.core_service.domain.validation import (
@@ -333,4 +334,117 @@ class CancelPaymentOutput:
             from_account_id=payment.from_account_id,
             created_at=payment.created_at,
             updated_at=payment.updated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HandleProviderWebhookInput:
+    """Вход сценария обработки вебхука провайдера (T-2.7).
+
+    Уведомление несёт три вещи, и каждой находится строго одно место:
+
+    * ``provider_event_id`` — идентификатор **события** у провайдера. Он уникален
+      и не меняется при повторной доставке, поэтому это ключ идемпотентности:
+      две одинаковые доставки обязаны дать один результат;
+    * ``provider_payment_id`` — идентификатор **операции**, по которому находится
+      наш платёж (во входящем уведомлении нашего ``payment_id`` нет);
+    * ``provider_status`` — статус операции на шкале провайдера. Разбор «сырого»
+      ответа шлюза в это значение — работа адаптера (T-2.2), ядро принимает уже
+      канонический ``ProviderStatus`` и само решает, что с ним делать.
+
+    :param provider_event_id: идентификатор события провайдера; он же ключ
+        идемпотентности, поэтому обрезается по краям и мерится по границе
+        хранилища ключей (:data:`MAX_IDEMPOTENCY_KEY_LENGTH`);
+    :param provider_payment_id: идентификатор операции у провайдера;
+    :param provider_status: канонический статус операции;
+    :raises InvalidValueError: если строка пуста/длинна или статус не из
+        ``ProviderStatus``.
+    """
+
+    provider_event_id: str
+    provider_payment_id: str
+    provider_status: ProviderStatus
+
+    def __post_init__(self) -> None:
+        event_id = require_non_empty_str(self.provider_event_id, 'provider_event_id')
+        # Ключ ложится в то же хранилище, что и клиентские ключи идемпотентности,
+        # поэтому меряется той же границей — иначе вебхук от здорового шлюза
+        # упал бы уже на записи, а не на входе сценария.
+        object.__setattr__(
+            self,
+            'provider_event_id',
+            require_max_length_str(event_id, 'provider_event_id', max_length=MAX_IDEMPOTENCY_KEY_LENGTH),
+        )
+        object.__setattr__(
+            self,
+            'provider_payment_id',
+            require_non_empty_str(self.provider_payment_id, 'provider_payment_id'),
+        )
+        require_type(self.provider_status, ProviderStatus, 'provider_status')
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HandleProviderWebhookOutput:
+    """Результат обработки вебхука: состояние платежа после уведомления.
+
+    Намеренно только состояние, без флагов «применено/пропущено». Обработка
+    идемпотентна, значит повторная доставка возвращает **тот же** ответ: флаг
+    «в этот раз ничего не делали» отличал бы первую доставку от повтора и
+    сломал бы это свойство. Что именно произошло, видно по ``status`` и по
+    событиям в outbox.
+
+    :param payment_id: идентификатор нашего платежа, найденного по операции;
+    :param status: статус платежа после применения уведомления;
+    :param amount: сумма платежа (по ней потребитель ответа видит, что деньги
+        не двигались дважды);
+    :raises InvalidValueError: если поля некорректны.
+    """
+
+    payment_id: PaymentId
+    status: PaymentStatus
+    amount: Money
+
+    def __post_init__(self) -> None:
+        require_payment_output_fields(self.payment_id, self.status, self.amount)
+
+    @classmethod
+    def from_payment(cls, payment: Payment) -> Self:
+        """Собирает результат обработки из сущности платежа.
+
+        :raises InvalidValueError: если сущность нарушает свои инварианты.
+        """
+        require_type(payment, Payment, 'payment')
+        return cls(payment_id=payment.id, status=payment.status, amount=payment.amount)
+
+    def to_idempotency_response(self) -> dict[str, Any]:
+        """Приводит ответ к виду, пригодному для хранения под ключом события.
+
+        Формат — тот же, что у ответа создания платежа: и там, и здесь под
+        ключом лежит ``payment_id``/``status``/сумма. Только скаляры, доменные
+        типы кодируются строкой и разбираются обратно
+        :meth:`from_idempotency_response`.
+        """
+        return {
+            'payment_id': str(self.payment_id),
+            'status': str(self.status),
+            'amount': str(self.amount.amount),
+            'currency': str(self.amount.currency),
+        }
+
+    @classmethod
+    def from_idempotency_response(cls, response: Mapping[str, Any]) -> Self:
+        """Восстанавливает результат из сохранённого ответа.
+
+        Повторная доставка проходит ту же валидацию, что и первая: «повтор» не
+        должен отдавать ослабленный DTO.
+
+        :raises InvalidValueError: если ответ повреждён или неполон.
+        """
+        return cls(
+            payment_id=PaymentId.from_string(_response_str(response, 'payment_id')),
+            status=PaymentStatus(_response_str(response, 'status')),
+            amount=Money(
+                amount=Decimal(_response_str(response, 'amount')),
+                currency=Currency(_response_str(response, 'currency')),
+            ),
         )

@@ -13,6 +13,8 @@ from src.core_service.application.dto import (
     CreatePaymentOutput,
     GetPaymentInput,
     GetPaymentOutput,
+    HandleProviderWebhookInput,
+    HandleProviderWebhookOutput,
 )
 from src.core_service.application.ports import (
     ACCOUNT_LOCK_RESOURCE_PREFIX,
@@ -37,6 +39,7 @@ from src.core_service.application.use_cases import (
     CancelPaymentUseCase,
     CreatePaymentUseCase,
     GetPaymentUseCase,
+    HandleProviderWebhookUseCase,
 )
 
 __all__ = (
@@ -58,6 +61,9 @@ __all__ = (
     'GetPaymentInput',
     'GetPaymentOutput',
     'GetPaymentUseCase',
+    'HandleProviderWebhookInput',
+    'HandleProviderWebhookOutput',
+    'HandleProviderWebhookUseCase',
     'IdempotencyRecord',
     'IdempotencyStore',
     'LockManager',
