@@ -2,6 +2,7 @@
 
 from src.core_service.domain.events.base import DomainEvent
 from src.core_service.domain.events.payment import (
+    PaymentCancelled,
     PaymentCreated,
     PaymentFailed,
     PaymentRefunded,
@@ -10,6 +11,7 @@ from src.core_service.domain.events.payment import (
 
 __all__ = (
     'DomainEvent',
+    'PaymentCancelled',
     'PaymentCreated',
     'PaymentFailed',
     'PaymentRefunded',

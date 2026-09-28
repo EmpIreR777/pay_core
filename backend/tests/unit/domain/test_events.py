@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from src.core_service.domain.events import (
+    PaymentCancelled,
     PaymentCreated,
     PaymentFailed,
     PaymentRefunded,
@@ -259,5 +260,52 @@ class TestPaymentRefunded:
                 payment_id=payment_id,
                 from_account_id=account_id,
                 refunded_amount=amount,
+                reason=999,  # type: ignore[arg-type]
+            )
+
+
+class TestPaymentCancelled:
+    """Тесты события PaymentCancelled."""
+
+    def test_creation_success(self) -> None:
+        payment_id, account_id, amount = _create_sample_ids()
+        event = PaymentCancelled(
+            payment_id=payment_id,
+            from_account_id=account_id,
+            amount=amount,
+            reason='Customer requested cancellation',
+        )
+        assert isinstance(event, DomainEvent)
+        assert event.payment_id == payment_id
+        assert event.from_account_id == account_id
+        assert event.amount == amount
+        assert event.reason == 'Customer requested cancellation'
+
+    def test_creation_default_reason_is_none(self) -> None:
+        payment_id, account_id, amount = _create_sample_ids()
+        event = PaymentCancelled(
+            payment_id=payment_id,
+            from_account_id=account_id,
+            amount=amount,
+        )
+        assert event.reason is None
+
+    def test_immutability(self) -> None:
+        payment_id, account_id, amount = _create_sample_ids()
+        event = PaymentCancelled(
+            payment_id=payment_id,
+            from_account_id=account_id,
+            amount=amount,
+        )
+        with pytest.raises(FrozenInstanceError):
+            event.amount = Money.from_number(10, Currency.RUB)  # type: ignore[misc]
+
+    def test_rejects_non_str_reason(self) -> None:
+        payment_id, account_id, amount = _create_sample_ids()
+        with pytest.raises(InvalidValueError, match='reason: ожидается непустая строка или None'):
+            PaymentCancelled(
+                payment_id=payment_id,
+                from_account_id=account_id,
+                amount=amount,
                 reason=999,  # type: ignore[arg-type]
             )

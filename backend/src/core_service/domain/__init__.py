@@ -8,6 +8,7 @@
 from src.core_service.domain.entities import Account, Payment
 from src.core_service.domain.events import (
     DomainEvent,
+    PaymentCancelled,
     PaymentCreated,
     PaymentFailed,
     PaymentRefunded,
@@ -61,6 +62,7 @@ __all__ = (
     'Money',
     'NegativeAmountError',
     'Payment',
+    'PaymentCancelled',
     'PaymentCreated',
     'PaymentFailed',
     'PaymentId',

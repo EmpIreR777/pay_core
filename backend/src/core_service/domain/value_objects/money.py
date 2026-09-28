@@ -126,6 +126,11 @@ class Money:
     # --- Сравнения ---
     # Равенство (``__eq__``) генерирует dataclass: суммы в разных валютах
     # просто не равны. Порядковые же сравнения бросают CurrencyMismatchError.
+    #
+    # Повторяющийся здесь ``isinstance`` → ``return NotImplemented`` — не дубль
+    # правила, а протокол операторов Python: вернуть ``NotImplemented`` обязан сам
+    # метод, спрятать его в помощника нельзя. Само правило «только одна валюта»
+    # живёт единственный раз в ``_require_same_currency``, и ниже вызывается оно.
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Money):

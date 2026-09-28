@@ -7,6 +7,8 @@
 """
 
 from src.core_service.application.dto import (
+    CancelPaymentInput,
+    CancelPaymentOutput,
     CreatePaymentInput,
     CreatePaymentOutput,
     GetPaymentInput,
@@ -31,7 +33,11 @@ from src.core_service.application.ports import (
     ProviderStatus,
     UnitOfWork,
 )
-from src.core_service.application.use_cases import CreatePaymentUseCase, GetPaymentUseCase
+from src.core_service.application.use_cases import (
+    CancelPaymentUseCase,
+    CreatePaymentUseCase,
+    GetPaymentUseCase,
+)
 
 __all__ = (
     'ACCOUNT_LOCK_RESOURCE_PREFIX',
@@ -40,6 +46,9 @@ __all__ = (
     'MAX_IDEMPOTENCY_KEY_LENGTH',
     'TERMINAL_PROVIDER_STATUSES',
     'AccountRepository',
+    'CancelPaymentInput',
+    'CancelPaymentOutput',
+    'CancelPaymentUseCase',
     'Clock',
     'CreatePaymentInput',
     'CreatePaymentOutput',

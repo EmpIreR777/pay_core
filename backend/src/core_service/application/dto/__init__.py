@@ -9,6 +9,8 @@
 """
 
 from src.core_service.application.dto.payment import (
+    CancelPaymentInput,
+    CancelPaymentOutput,
     CreatePaymentInput,
     CreatePaymentOutput,
     GetPaymentInput,
@@ -21,6 +23,8 @@ from src.core_service.domain.value_objects.payment_status import PROVIDER_BOUND_
 __all__ = (
     'MAX_IDEMPOTENCY_KEY_LENGTH',
     'PROVIDER_BOUND_PAYMENT_STATUSES',
+    'CancelPaymentInput',
+    'CancelPaymentOutput',
     'CreatePaymentInput',
     'CreatePaymentOutput',
     'GetPaymentInput',

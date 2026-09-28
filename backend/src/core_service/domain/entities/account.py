@@ -120,22 +120,14 @@ class Account:
 
     def deposit(self, amount: Money) -> None:
         """Пополняет счёт. Знак суммы задаёт метод, а не значение."""
-        operation = 'Пополнение счёта'
-        self._require_operable(operation)
-        checked = require_money(amount, operation)
-        self._require_same_currency(checked, operation)
-        require_non_zero_money(checked, operation)
+        checked = self._checked_operation_amount(amount, 'Пополнение счёта')
 
         self._balance = self._balance + checked
         self._touch()
 
     def withdraw(self, amount: Money) -> None:
         """Списывает средства. Уход баланса в минус — не «овердрафт», а отказ."""
-        operation = 'Списание со счёта'
-        self._require_operable(operation)
-        checked = require_money(amount, operation)
-        self._require_same_currency(checked, operation)
-        require_non_zero_money(checked, operation)
+        checked = self._checked_operation_amount(amount, 'Списание со счёта')
 
         if checked > self._balance:
             raise InsufficientFunds(
@@ -179,6 +171,24 @@ class Account:
         self._touch()
 
     # --- Внутренние проверки инвариантов ---
+    def _checked_operation_amount(self, amount: Money, operation: str) -> Money:
+        """Проверяет, что операция с суммой вообще допустима, и возвращает сумму.
+
+        Четыре условия — «счёт работает, сумма это Money, валюта та же, сумма не
+        нулевая» — одинаковы для пополнения и списания. Держать их в обоих методах
+        означало бы, что однажды пополнение получит четвёртую проверку, а списание
+        — нет, и списание начнёт принимать нулевые суммы. Правило одно, значит и
+        проверка одна.
+
+        :param amount: сумма операции;
+        :param operation: человекочитаемое имя операции для текста ошибки;
+        :returns: проверенную сумму, готовую к применению.
+        """
+        self._require_operable(operation)
+        checked = require_money(amount, operation)
+        self._require_same_currency(checked, operation)
+        require_non_zero_money(checked, operation)
+        return checked
 
     def _require_operable(self, operation: str) -> None:
         if self._is_blocked:

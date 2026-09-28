@@ -28,13 +28,12 @@ from datetime import UTC, datetime
 from typing import Self
 
 from src.core_service.domain.exceptions import (
-    InvalidIdentifierError,
     InvalidTransition,
 )
 from src.core_service.domain.validation import (
     require_min_int,
     require_optional_non_empty_str,
-    require_positive_money,
+    require_payment_fields,
     require_type,
     require_utc,
 )
@@ -79,9 +78,7 @@ class Payment:
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
     ) -> None:
-        require_type(payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
-        require_type(from_account_id, AccountId, 'from_account_id', error_type=InvalidIdentifierError)
-        require_positive_money(amount, 'amount')
+        require_payment_fields(payment_id, from_account_id, amount)
         require_type(status, PaymentStatus, 'status')
         checked_version = require_min_int(version, 'version', minimum=MIN_VERSION)
         checked_provider_payment_id = require_optional_non_empty_str(provider_payment_id, 'provider_payment_id')

@@ -32,10 +32,10 @@ from src.core_service.application.ports.clock import Clock
 from src.core_service.application.ports.event_publisher import EventPublisher
 from src.core_service.application.ports.payment_provider import PaymentProvider
 from src.core_service.application.ports.unit_of_work import UnitOfWork
+from src.core_service.application.use_cases.payment_lookup import read_payment
 from src.core_service.application.use_cases.payment_sync import apply_provider_status, is_provider_status_actionable
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.exceptions import EntityNotFoundError
-from src.core_service.domain.value_objects.identifiers import PaymentId
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
 
 
@@ -75,24 +75,14 @@ class GetPaymentUseCase:
             актуализации. Терминальные платежи читаются всегда: их статус
             известен, обращаться к сети незачем.
         """
-        payment = await self._read_payment(data.payment_id)
+        # Транзакция чтения закрывается сразу: сетевой вызов ниже обязан идти вне
+        # транзакции (AGENT.md §4.2), иначе мы держали бы блокировки строк во
+        # время ответа шлюза.
+        payment = await read_payment(self._uow_factory, data.payment_id)
         provider_payment_id = self._provider_operation_id(payment)
         if provider_payment_id is None:
             return GetPaymentOutput.from_payment(payment)
         return await self._actualize(payment, provider_payment_id)
-
-    async def _read_payment(self, payment_id: PaymentId) -> Payment:
-        """Короткое чтение: открываем и сразу закрываем транзакцию.
-
-        Отдельный метод нужен, чтобы транзакция гарантированно закрылась **до**
-        сетевого вызова: если бы чтение и запись жили в одном ``async with``, сеть
-        оказалась бы внутри транзакции, и мы вернулись бы к проблеме из T-2.4.
-        """
-        async with self._uow_factory() as uow:
-            payment = await uow.payments.get(payment_id)
-            if payment is None:
-                raise EntityNotFoundError(f'Платёж {payment_id} не найден')
-            return payment
 
     def _provider_operation_id(self, payment: Payment) -> str | None:
         """Идентификатор операции у провайдера, если к платежу есть что спрашивать.

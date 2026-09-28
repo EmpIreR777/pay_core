@@ -17,6 +17,8 @@ from src.core_service.application import dto
 from src.core_service.application.dto import (
     MAX_IDEMPOTENCY_KEY_LENGTH,
     PROVIDER_BOUND_PAYMENT_STATUSES,
+    CancelPaymentInput,
+    CancelPaymentOutput,
     CreatePaymentInput,
     CreatePaymentOutput,
     GetPaymentInput,
@@ -51,6 +53,18 @@ DTO_FIELDS: dict[type, dict[str, type]] = {
         'created_at': datetime,
         'provider_payment_id': str | None,
     },
+    CancelPaymentInput: {
+        'payment_id': PaymentId,
+        'reason': str | None,
+    },
+    CancelPaymentOutput: {
+        'payment_id': PaymentId,
+        'status': PaymentStatus,
+        'amount': Money,
+        'from_account_id': AccountId,
+        'created_at': datetime,
+        'updated_at': datetime,
+    },
     GetPaymentInput: {'payment_id': PaymentId},
 }
 
@@ -79,7 +93,23 @@ def _output(**overrides: object) -> CreatePaymentOutput:
     return CreatePaymentOutput(**kwargs)  # type: ignore[arg-type]
 
 
+def _cancel_output(**overrides: object) -> CancelPaymentOutput:
+    """Собирает валидный выход отмены платежа с точечными переопределениями."""
+    kwargs: dict[str, object] = {
+        'payment_id': PAYMENT_ID,
+        'status': PaymentStatus.CANCELLED,
+        'amount': AMOUNT,
+        'from_account_id': ACCOUNT_ID,
+        'created_at': CREATED_AT,
+        'updated_at': CREATED_AT,
+    }
+    kwargs.update(overrides)
+    return CancelPaymentOutput(**kwargs)  # type: ignore[arg-type]
+
+
 INSTANCES: dict[type, object] = {
+    CancelPaymentInput: CancelPaymentInput(payment_id=PAYMENT_ID),
+    CancelPaymentOutput: _cancel_output(),
     CreatePaymentInput: _input(),
     CreatePaymentOutput: _output(),
     GetPaymentInput: GetPaymentInput(payment_id=PAYMENT_ID),
@@ -122,6 +152,10 @@ def test_dtos_require_all_mandatory_fields() -> None:
         CreatePaymentOutput(status=PaymentStatus.FAILED)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         GetPaymentInput()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        CancelPaymentInput()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        CancelPaymentOutput(status=PaymentStatus.CANCELLED)  # type: ignore[call-arg]
 
 
 # --- CreatePaymentInput: валидация входа --------------------------------------
@@ -265,6 +299,47 @@ def test_get_input_rejects_non_payment_id(bad_payment_id: object) -> None:
         GetPaymentInput(payment_id=bad_payment_id)
 
 
+# --- CancelPaymentInput / CancelPaymentOutput ---------------------------------
+
+
+def test_cancel_input_accepts_valid_payment_id_and_reason() -> None:
+    inp = CancelPaymentInput(payment_id=PAYMENT_ID, reason='Customer request')
+    assert inp.payment_id == PAYMENT_ID
+    assert inp.reason == 'Customer request'
+
+
+def test_cancel_input_accepts_none_reason() -> None:
+    inp = CancelPaymentInput(payment_id=PAYMENT_ID)
+    assert inp.reason is None
+
+
+@pytest.mark.parametrize('bad_payment_id', ['pay-1', uuid4(), None, 123])
+def test_cancel_input_rejects_non_payment_id(bad_payment_id: object) -> None:
+    with pytest.raises(InvalidValueError, match='payment_id'):
+        CancelPaymentInput(payment_id=bad_payment_id)  # type: ignore[arg-type]
+
+
+def test_cancel_input_rejects_empty_reason() -> None:
+    with pytest.raises(InvalidValueError, match='reason: ожидается непустая строка или None'):
+        CancelPaymentInput(payment_id=PAYMENT_ID, reason='   ')
+
+
+def test_cancel_output_accepts_valid_data() -> None:
+    out = _cancel_output()
+    assert out.payment_id == PAYMENT_ID
+    assert out.status == PaymentStatus.CANCELLED
+    assert out.amount == AMOUNT
+    assert out.from_account_id == ACCOUNT_ID
+
+
+def test_cancel_output_rejects_updated_at_before_created_at() -> None:
+    with pytest.raises(InvalidValueError, match='updated_at не может предшествовать created_at'):
+        _cancel_output(
+            created_at=datetime(2026, 9, 27, 12, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 9, 27, 11, 0, tzinfo=UTC),
+        )
+
+
 # --- Единый источник правды и таксономия ошибок -------------------------------
 
 
@@ -282,6 +357,8 @@ def test_application_layer_reexports_dtos() -> None:
     assert application.CreatePaymentOutput is CreatePaymentOutput
     assert application.GetPaymentInput is GetPaymentInput
     assert application.MAX_IDEMPOTENCY_KEY_LENGTH == MAX_IDEMPOTENCY_KEY_LENGTH
+    assert application.CancelPaymentInput is CancelPaymentInput
+    assert application.CancelPaymentOutput is CancelPaymentOutput
 
 
 def test_provider_bound_statuses_cover_processing_and_settled() -> None:

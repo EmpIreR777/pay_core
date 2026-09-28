@@ -35,6 +35,8 @@ from src.core_service.domain.validation import (
     require_max_length_str,
     require_non_empty_str,
     require_optional_non_empty_str,
+    require_payment_output_fields,
+    require_payment_source,
     require_positive_money,
     require_type,
     require_utc,
@@ -45,7 +47,6 @@ from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import (
     PaymentStatus,
     require_provider_payment_coherence,
-    require_time_order,
 )
 
 
@@ -119,9 +120,7 @@ class CreatePaymentOutput:
     provider_payment_id: str | None = None
 
     def __post_init__(self) -> None:
-        require_type(self.payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
-        require_type(self.status, PaymentStatus, 'status')
-        require_positive_money(self.amount, 'amount')
+        require_payment_output_fields(self.payment_id, self.status, self.amount)
         require_utc(self.created_at, 'created_at')
         provider_payment_id = require_optional_non_empty_str(self.provider_payment_id, 'provider_payment_id')
         object.__setattr__(self, 'provider_payment_id', provider_payment_id)
@@ -226,12 +225,8 @@ class GetPaymentOutput:
     failure_reason: str | None = None
 
     def __post_init__(self) -> None:
-        require_type(self.payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
-        require_type(self.status, PaymentStatus, 'status')
-        require_positive_money(self.amount, 'amount')
-        require_type(self.from_account_id, AccountId, 'from_account_id', error_type=InvalidIdentifierError)
-        require_utc(self.created_at, 'created_at')
-        require_utc(self.updated_at, 'updated_at')
+        require_payment_output_fields(self.payment_id, self.status, self.amount)
+        require_payment_source(self.from_account_id, self.created_at, self.updated_at)
         provider_payment_id = require_optional_non_empty_str(self.provider_payment_id, 'provider_payment_id')
         object.__setattr__(self, 'provider_payment_id', provider_payment_id)
         object.__setattr__(
@@ -240,9 +235,6 @@ class GetPaymentOutput:
             require_optional_non_empty_str(self.failure_reason, 'failure_reason'),
         )
         require_provider_payment_coherence(self.status, provider_payment_id)
-        # Правило «не изменён раньше созданного» — доменное, а не местное: его же
-        # проверяет сущность в своём конструкторе.
-        require_time_order(self.created_at, self.updated_at)
 
     @classmethod
     def from_payment(cls, payment: Payment) -> Self:
@@ -279,3 +271,66 @@ class GetPaymentInput:
 
     def __post_init__(self) -> None:
         require_type(self.payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CancelPaymentInput:
+    """Вход сценария отмены платежа (T-2.6).
+
+    Отменить можно только платёж в статусе ``PENDING``.
+
+    :param payment_id: идентификатор отменяемого платежа;
+    :param reason: необязательная причина отмены (для аудита и событий).
+    :raises InvalidValueError: если передан не ``PaymentId`` или пустая строка причины.
+    """
+
+    payment_id: PaymentId
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        require_type(self.payment_id, PaymentId, 'payment_id', error_type=InvalidIdentifierError)
+        object.__setattr__(
+            self,
+            'reason',
+            require_optional_non_empty_str(self.reason, 'reason'),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CancelPaymentOutput:
+    """Результат сценария отмены платежа (T-2.6).
+
+    :param payment_id: идентификатор отменённого платежа;
+    :param status: статус после отмены (``CANCELLED``);
+    :param amount: сумма платежа, возвращённая на баланс;
+    :param from_account_id: счёт списания, на который вернулись деньги;
+    :param created_at: время создания платежа (UTC);
+    :param updated_at: время отмены платежа (UTC);
+    """
+
+    payment_id: PaymentId
+    status: PaymentStatus
+    amount: Money
+    from_account_id: AccountId
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        require_payment_output_fields(self.payment_id, self.status, self.amount)
+        require_payment_source(self.from_account_id, self.created_at, self.updated_at)
+
+    @classmethod
+    def from_payment(cls, payment: Payment) -> Self:
+        """Собирает результат отмены из сущности платежа.
+
+        :raises InvalidValueError: если сущность нарушает свои инварианты.
+        """
+        require_type(payment, Payment, 'payment')
+        return cls(
+            payment_id=payment.id,
+            status=payment.status,
+            amount=payment.amount,
+            from_account_id=payment.from_account_id,
+            created_at=payment.created_at,
+            updated_at=payment.updated_at,
+        )

@@ -1,11 +1,15 @@
 """Применение ответа провайдера к платежу: единственное место с этим правилом (T-2.5).
 
-Правило «ответ провайдера переводит платёж в статус, а бизнес-отказ ещё и
-возвращает холд» одинаково для трёх сценариев: создания (T-2.4), чтения с
-актуализацией (T-2.5) и вебхука (T-2.7). Если у каждого будет своя копия, то
-одна из них рано или поздно забудет про возврат денег — и клиент потеряет сумму
-на платёж, который провайдер отклонил. Поэтому правило живёт здесь, а сценарии
-вызывают его.
+Правило «ответ провайдера переводит платёж в статус» одинаково для трёх сценариев:
+создания (T-2.4), чтения с актуализацией (T-2.5) и вебхука (T-2.7). Если у каждого
+будет своя копия, то одна из них рано или поздно забудет про возврат денег — и клиент
+потеряет сумму на платёж, который провайдер отклонил. Поэтому правило живёт здесь, а
+сценарии вызывают его.
+
+Возврат холда вынесен отдельно (:mod:`application.use_cases.hold`): к нему пришёл ещё
+и третий сценарий — отмена платежа (T-2.6), у которого отмена вообще не связана с
+ответом провайдера. Держать два разных правила в одном модуле означало бы прятать
+общее; держать общий возврат в модуле про провайдера — не менее плохо.
 
 Все изменения выполняются **внутри уже открытой транзакции** вызывающего: платёж,
 события и движение денег обязаны зафиксироваться одним коммитом. Открывать и
@@ -15,10 +19,10 @@
 from src.core_service.application.ports.event_publisher import EventPublisher
 from src.core_service.application.ports.payment_provider import TERMINAL_PROVIDER_STATUSES, ProviderStatus
 from src.core_service.application.ports.unit_of_work import UnitOfWork
+from src.core_service.application.use_cases.hold import release_hold
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
 from src.core_service.domain.events.payment import PaymentFailed, PaymentRefunded, PaymentSettled
-from src.core_service.domain.exceptions import EntityNotFoundError
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
 
 #: Причина отказа, которую сценарии пишут в платёж и в ``PaymentFailed``. Свой
@@ -55,7 +59,7 @@ async def apply_provider_status(
         return ()
 
     if provider_status is ProviderStatus.FAILED:
-        await _release_hold(uow, payment)
+        await release_hold(uow, payment)
         payment.fail(PROVIDER_REJECTION_REASON)
         return (
             PaymentFailed(
@@ -98,28 +102,3 @@ def is_provider_status_actionable(payment_status: PaymentStatus, provider_status
     if payment_status.is_terminal:
         return False
     return provider_status in TERMINAL_PROVIDER_STATUSES
-
-
-async def _release_hold(uow: UnitOfWork, payment: Payment) -> None:
-    """Возвращает списанную под платёж сумму на счёт плательщика.
-
-    Бизнес-отказ — единственный исход, где мы **точно знаем**, что деньги у
-    провайдера не забраны: шлюз отклонил операцию по существу. Значит, холд нужно
-    отпустить, иначе деньги клиента остались бы замороженными навсегда за платёж,
-    который не прошёл.
-
-    Повторный возврат исключён статус-машиной: ``FAILED`` терминален, значит
-    второй заход в эту функцию невозможен.
-
-    :raises EntityNotFoundError: счёт плательщика исчез из хранилища.
-    :raises AccountBlocked: счёт заблокирован. Деньги тогда останутся в холде, а
-        платёж — в ``PROCESSING``: это осознанно. «Пропустить» возврат и записать
-        ``FAILED`` нельзя — клиент потеряет сумму, а починить холд потом будет
-        некому. Освобождение счёта и повторный заход сценария сделают возврат
-        позже; сценарий падает с доменной ошибкой, а не делает вид, что всё в порядке.
-    """
-    account = await uow.accounts.get_for_update(payment.from_account_id)
-    if account is None:
-        raise EntityNotFoundError(f'Счёт плательщика {payment.from_account_id} не найден для возврата средств')
-    account.deposit(payment.amount)
-    await uow.accounts.update(account)

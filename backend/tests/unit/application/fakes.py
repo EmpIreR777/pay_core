@@ -29,6 +29,7 @@ from src.core_service.application.ports.lock_manager import (
     DistributedLock,
 )
 from src.core_service.application.ports.payment_provider import ProviderResult, ProviderStatus
+from src.core_service.application.use_cases.cancel_payment import CancelPaymentUseCase
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
 from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
 from src.core_service.domain.entities.account import Account
@@ -552,8 +553,27 @@ class SagaEnvironment:
             clock=self.clock,
         )
 
+    def build_cancel_use_case(self) -> CancelPaymentUseCase:
+        """Сценарий отмены платежа, связанный с этим окружением."""
+        return CancelPaymentUseCase(
+            uow_factory=self.uow_factory,
+            lock_manager=self.lock_manager,
+            event_publisher=self.event_publisher,
+            clock=self.clock,
+        )
+
     def account_balance(self, account_id: AccountId) -> Money:
         return self.database.accounts[account_id].balance
+
+    def stored_account(self, account_id: AccountId) -> Account:
+        """Счёт **из хранилища**, а не из рук теста.
+
+        Откат в :class:`FakeUnitOfWork` возвращает глубокую копию снимка, поэтому
+        после неудачной транзакции объект, который держал тест, и запись в базе —
+        разные сущности. Блокировать и разблокировать нужно именно запись: иначе
+        тест правит объект, на который сценарий уже не смотрит.
+        """
+        return self.database.accounts[account_id]
 
     def only_payment(self) -> Payment:
         """Единственный сохранённый платёж (в этих тестах он всегда один)."""

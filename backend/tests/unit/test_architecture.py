@@ -191,20 +191,46 @@ def _reexported_names(tree: ast.Module) -> set[str]:
     return names
 
 
+#: Сосуды, внутрь которых запрятаны инструкции. Раньше тело целиком внутри одного
+#: такого блока считалось «тривиальным» (верхнеуровневых инструкций меньше двух),
+#: и любой код вида ``async with ...: if ...: raise ...; return`` выпадал из
+#: проверки. На этом слепом месте разошлись две копии ``_read_payment``.
+NESTING_STATEMENTS = (ast.With, ast.AsyncWith, ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try)
+
+
+def _real_statements(statements: list[ast.stmt]) -> int:
+    """Считает содержательные инструкции, заходя внутрь вложенных блоков.
+
+    Докстринги и ``pass`` не считаются: они не несут логики, ради которой функцию
+    имеет смысл сравнивать с другой.
+    """
+    total = 0
+    for stmt in statements:
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        if isinstance(stmt, TRIVIAL_STATEMENTS):
+            continue
+        total += 1
+        if isinstance(stmt, NESTING_STATEMENTS):
+            total += _real_statements(list(ast.iter_child_nodes(stmt)))
+    return total
+
+
 def _meaningful_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     """Нормализованное тело функции либо ``None``, если содержательной логики нет.
 
     Тривиальны только заглушки (``...``/``pass``/``raise NotImplemented``) и тела
-    из одной инструкции (геттеры вида ``return self._x``). Проверка «if + return»
-    содержательной считается: именно такие маленькие валидаторы копируют чаще
-    всего, и именно их нельзя выпускать из-под контроля.
+    с одной содержательной инструкцией (геттеры вида ``return self._x``). Проверка
+    «if + return» содержательной считается: именно такие маленькие валидаторы
+    копируют чаще всего, и именно их нельзя выпускать из-под контроля.
+
+    Считается **с учётом вложенности**: весь код может лежать внутри одного
+    ``async with``, и это не делает его заготовкой. Раньше такой случай выпадал
+    из проверки, и дубль проходил незамеченным.
     """
-    body = list(node.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        body = body[1:]  # docstring
-    if len(body) < 2 or all(isinstance(stmt, TRIVIAL_STATEMENTS) for stmt in body):
+    if _real_statements(list(node.body)) < 2:
         return None
-    return ast.dump(ast.Module(body=body, type_ignores=[]))
+    return ast.dump(ast.Module(body=list(node.body), type_ignores=[]))
 
 
 def _scan() -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]]]:

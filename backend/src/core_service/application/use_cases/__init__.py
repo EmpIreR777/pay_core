@@ -6,11 +6,13 @@
 
 * ``create_payment.py`` — сага создания платежа (T-2.4)
 * ``get_payment.py`` — чтение платежа с актуализацией у провайдера (T-2.5)
+* ``cancel_payment.py`` — отмена PENDING платежа с возвратом холда (T-2.6)
 * ``payment_sync.py`` — общее правило «ответ провайдера → статус платежа»,
   которым пользуются T-2.4, T-2.5 и будущий вебхук (T-2.7)
 """
 
+from src.core_service.application.use_cases.cancel_payment import CancelPaymentUseCase
 from src.core_service.application.use_cases.create_payment import CreatePaymentUseCase
 from src.core_service.application.use_cases.get_payment import GetPaymentUseCase
 
-__all__ = ('CreatePaymentUseCase', 'GetPaymentUseCase')
+__all__ = ('CancelPaymentUseCase', 'CreatePaymentUseCase', 'GetPaymentUseCase')
