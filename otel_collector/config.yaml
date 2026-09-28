@@ -124,11 +124,56 @@ exporters:
         - service.name
         - service.instance.id
 
-  # --- logs: пока только в stdout ------------------------------------------
-  # Канал логов приложений по OTLP заведён заранее, чтобы не менять
-  # пайплайны, когда в Эпике 12 подключим Loki-экспортёр вместо debug.
+  # --- logs: fan-out в Loki по нативному OTLP/HTTP --------------------------
+  # Третий сигнал телеметрии. Раньше здесь стоял `debug` (логи уходили в
+  # stdout контейнера и были видны только через `docker logs`); канал был
+  # заведён заранее именно для этого переключения.
+  #
+  # ПОЧЕМУ otlp_http, А НЕ экспортёр `loki`: в contrib 0.161.0 экспортёр
+  # `loki` удалён (проверено `otelcol-contrib components`). Современный
+  # путь — нативный OTLP-приёмник Loki 3.x.
+  #
+  # КАК ФОРМИРУЕТСЯ URL: экспортёр сам дописывает `/v1/logs` к endpoint'у,
+  # поэтому здесь указан `/otlp` БЕЗ `/v1/logs` — итоговый адрес
+  # http://loki:3100/otlp/v1/logs. Если дописать `/v1/logs` вручную,
+  # получим 404: `/otlp/v1/logs/v1/logs`.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    # Внутри docker-сети pay-core-net, поэтому TLS не нужен. Соединение
+    # идёт по обычному HTTP, НЕ по gRPC, поэтому тут именно otlp_http.
+    tls:
+      insecure: true
+    # Очередь и ретраи — по тем же основаниям, что у Jaeger: Loki может
+    # перезапускаться или долго переваривать компакцию, а логи терять
+    # нельзя (это единственный сигнал, который переживает рестарт трейсов).
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 1024
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 60s
+
+  # --- logs (fallback): дублируем в stdout ---------------------------------
+  # debug оставлен НАРОЧНО и вторая веткой пайплайна. Причины:
+  #   1. Loki на dev может быть не поднят — тогда логи не теряются, а
+  #      остаются видны в `docker logs -f pay-otel-collector`.
+  #   2. На старте стенда Loki ещё инициализирует схему; первые записи
+  #      уйдут в очередь экспортёра, а не пропадут.
+  # В проде эту ветку убирают, оставляя только otlp_http/loki.
+  #
+  # verbosity: detailed — НЕ basic. Разница принципиальная:
+  #   basic    печатает только сводку: 'resource logs: 1, log records: 1'
+  #   detailed печатает сами записи (тело, уровень, trace_id, атрибуты)
+  # Страховка, которая не показывает содержимое логов, бесполезна: если
+  # Loki лёг, пришлось бы лезть в Loki и не находить его. На dev шум от
+  # подробного вывода безопасен (логов мало), в проде ветка сносится.
   debug:
-    verbosity: basic
+    verbosity: detailed
+    sampling_initial: 2
+    sampling_thereafter: 500
 
 extensions:
   # Health-endpoint для внешних проверок и для будущего Compose healthcheck.
@@ -165,4 +210,7 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [debug]
+      # Две ветки: Loki — постоянное хранилище, debug — страховка,
+      # чтобы потерять логи на dev было невозможно (см. комментарий
+      # у экспортёра debug). Порядок не важен, ветки независимы.
+      exporters: [otlp_http/loki, debug]

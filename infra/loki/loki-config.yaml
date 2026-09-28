@@ -1,0 +1,140 @@
+# ==============================================================================
+# Loki — долговременное хранилище логов приложений (T-0.9).
+#
+# ЗАЧЕМ: третий сигнал телеметрии. До подключения логи приложений по OTLP
+# уходили в экспортёр `debug` Collector'а, то есть просто в stdout контейнера
+# (`docker logs pay-otel-collector`). Живущие там логи нельзя ни искать,
+# ни фильтровать, ни соотнести с трейсом.
+#
+# КАК ПОДКЛЮЧЁН (это важно, потому что путь неочевиден):
+#   приложение --OTLP/gRPC--> otel-collector:4317
+#                                 `-- logs --> otlp_http/loki --HTTP POST--> loki:3100/otlp/v1/logs
+#                                                                        `-- Loki UI :3100
+#                                                                              `-- Grafana (datasource Loki)
+#
+# ВАЖНО про экспортёр: в contrib 0.161.0 экспортёра `loki` БОЛЬШЕ НЕТ
+# (проверено `otelcol-contrib components` — в списке exporters только
+# otlp_grpc / otlp_http / otlp_json). Старый Loki-экспортёр умел только
+# слать в push-API Loki и не умел structured metadata. Современный
+# путь — нативный OTLP-приёмник Loki 3.x, а шлюзом служит обычный
+# otlp_http: экспортёр сам дописывает `/v1/logs` к endpoint'у.
+#
+# В отличие от Jaeger, логи здесь ХРАНЯТСЯ: том `loki-data` + `retention_period`.
+# Логи — это то, по чему разбирают инцидент постфактум, когда трейс уже
+# протух (в Jaeger он живёт в RAM и умирает при рестарте).
+# ==============================================================================
+
+# Локальная разработка без внешней авторизации: Grafana ходит в Loki сам,
+# и каждый, кто открыл localhost:3100, и так уже внутри доверенной сети.
+# В проде — true + проксирование через gateway.
+auth_enabled: false
+
+# ---------------------------------------------------------------------------
+# Встроенный UI Loki: http://localhost:3100/ui
+#
+# ПОЧЕМУ ЭТО НУЖНО ЯВНО: начиная с Loki 3.x UI стал «экспериментальным» и
+# по умолчанию ВЫКЛЮЧЕН. Флаг `-ui.enabled` есть в бинаре, но дефолт = false,
+# поэтому без него:
+#   http://localhost:3100/     -> 404 page not found
+#   http://localhost:3100/ui  -> 404 page not found
+# при этом /ready, /metrics и /loki/api/v1/* отвечают 200 — то есть Loki
+# полностью жив, просто интерфейса нет. Отсюда ложный вывод «Loki сломан»,
+# хотя хранилище работает и данные на месте.
+#
+# Альтернатива — смотреть логи через Grafana (datasource Loki, Explore).
+# Но отдельный UI Loki полезен для отладки: в нём видны сырые лейблы,
+# structured metadata и реальная кардинальность потоков.
+# ---------------------------------------------------------------------------
+ui:
+  enabled: true
+
+server:
+  http_listen_port: 3100
+  # Порт OTLP/gRPC-приёмника Loki. Принимает трейсы и метрики, если
+  # когда-нибудь решим лить их в Loki вместо Jaeger/Prometheus.
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  # Один инстанс (по PLAN.md репликаций нет), поэтому memberlist заменён
+  # на in-memory ring — иначе Loki не поднимется без кворума.
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+# Схема хранения. v13/tsdb — актуальная для Loki 3.x: индексы на TSDB,
+# чанки на filesystem. Схема объявляется начиная с `from`; менять её
+# задним числом нельзя, поэтому дата зафиксирована в прошлом.
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+  filesystem:
+    directory: /loki/chunks
+
+# Compactor умеет применять retention. Без секции compaction retention
+# НЕ работает: логи лежали бы вечно, несмотря на limits_config ниже.
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  # Пауза перед удалением, чтобы «горящий» запрос дописал данные.
+  retention_delete_delay: 2h
+  compaction_interval: 10m
+
+limits_config:
+  # 7 дней — намеренно столько же, сколько PROMETHEUS_RETENTION в
+  # docker-compose.yml. Разные окна retention у метрик и логов — источник
+  # путаницы вида «в Grafana метрика есть, а логов нет».
+  retention_period: 168h
+  # Обязательно для OTLP: без этого Loki отвергнет записи, у которых
+  # trace_id/span_id идут в structured metadata. Дефолт в 3.x — true,
+  # задано явно, чтобы не зависеть от дефолта версии.
+  allow_structured_metadata: true
+  # Не резать старые записи: на локальном стенде часы иногда убегают вперёд,
+  # и reject_old_samples=true молча ронял бы свежие логи.
+  reject_old_samples: false
+  volume_enabled: true
+
+  # Как resource-атрибуты OTLP превращаются в лейблы Loki.
+  #
+  # ВАЖНО про кардинальность: index_label попадает в ИНДЕКС потока, поэтому
+  # значение лейбла перемножает число потоков на диске. Высококардинальные
+  # значения (service.instance.id, trace_id, user_id) сюда НЕЛЬЗЯ — они
+  # уходят в structured metadata (действие по умолчанию), где стоят
+  # дёшево и при этом доступны для поиска.
+  #
+  # Ключевой момент: deployment.environment добавляется именно потому, что
+  # resource-процессор Collector'а его проставляет (см. otel_collector/config.yaml).
+  # Так лейбл в Loki и лейбл external_labels в Prometheus называются
+  # одинаково — и в Grafana работает один и тот же фильтр окружения.
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - deployment.environment
+            - service.namespace
+        # service.name НЕ перечислен: Loki 3.x по умолчанию и так помечает
+        # его в index (default_resource_attributes_as_index_labels).
+        # Дублировать нельзя — Loki падает на дубле.
+
+analytics:
+  # Отключаем phone-home: dev-стенд не должен никуда стучать наружу.
+  reporting_enabled: false

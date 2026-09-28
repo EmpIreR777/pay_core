@@ -5,11 +5,20 @@ datasources:
     # Трейсы. Grafana сам по себе трейсы НЕ хранит — это «окно» в хранилище.
     # Подключив Jaeger как datasource, получаем:
     #   * Explore → Jaeger: поиск трейсов прямо в Grafana, без перехода на :16686
-    #   * переход «из графика в трейс»: клик по точке на панели с exemplars
+    #   * переход «из лога в трейс»: см. derivedFields в datasources/loki.yml
     #
-    # uid намеренно НЕ задан — Grafana ищет datasource по имени. Явный uid падал
-    # на старте с «data source not found», если в томе grafana.db уже лежит
-    # datasource со старым автосгенерированным uid.
+    # uid ЗАДАЛСЯ ЯВНО (раньше был намеренно не задан, потому что Grafana
+    # падал со «data source not found» на уже созданном томе grafana.db).
+    # Теперь явный uid обязателен: на него ссылается derivedField в loki.yml,
+    # а случайно сгенерированный uid после пересоздания тома Grafana
+    # сломал бы переход «лог → трейс».
+    #
+    # МИГРАЦИЯ уже поднятого стенда (том grafana-data существует и в нём
+    # лежит datasource со старым автосгенерированным uid):
+    #   docker compose down -v grafana && docker compose up -d grafana
+    # Все datasource'ы и дашборды восстановятся из репозитория.
+    # Либо удалить datasource в UI и перезапустить контейнер Grafana.
+    uid: jaeger
     type: jaeger
     access: proxy
     url: http://jaeger:16686

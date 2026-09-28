@@ -126,8 +126,27 @@
     `otelcol_receiver_accepted_log_records` > 0 (logs-пайплайн тоже работает).
   - Grafana `http://localhost:3000/d/paycore-otel-overview`: 11 панелей отдают данные.
   - `make lint` и `make test` (16 тестов) — зелёные; `pre-commit run --all-files` — зелёный.
-- **Известное ограничение:** переход «из графика в трейс» (exemplars) не работает —
-  `enable_open_metrics: true` в конфиге есть, но `/api/v1/query_exemplars` возвращает
-  пусто. Поиск трейсов через `Explore -> Jaeger` при этом работает. Причина, вероятно,
-  в том, что одноразовый зонд пишет метрику один раз и умирает до скрейпа Prometheus.
-  Вынесено в бэклог отдельной задачей.
+- **Известное ограничение: переход «из графика в трейс» (exemplars) НЕ РАБОТАЕТ,
+  и это НЕ наша ошибка — это баг upstream.** Исследовано экспериментально в T-0.9
+  (замер по шагам через изолированный Collector с `debug`-экспортёром, чтобы увидеть
+  сырой OTLP):
+  - OTel SDK 1.45.0 exemplar **создаёт** и **отправляет** по OTLP. Проверено на сыром
+    OTLP: `Exemplar #0 -> Trace ID: a65d5024f670aecba69ff35d8fd90e8a -> Span ID: a7f654a0faa771e1`.
+  - Collector exemplar **получает** (видно в отладке пайплайна).
+  - Экспортёр `prometheus` в contrib 0.161.0 exemplars **не отдаёт**: в
+    OpenMetrics-выводе `:8889/metrics` ноль комментариев `# {trace_id="..."}`.
+    Проверено на изолированном стенде с тем же экспортёром — результат тот же,
+    то есть дело НЕ в нашем конфиге.
+  - Подтверждение от вендора: open-telemetry/opentelemetry-collector-contrib
+    issue **#40424** «Exemplars not exposed in Prometheus /metrics despite being
+    received by OpenTelemetry Collector» — закрыт как *stale / not planned*.
+    Смежная задача #47159 «Exemplars support for native Prometheus histograms»
+    закрыта как *completed* (апр. 2026), но в 0.161.0 поддержки ещё нет.
+  - Итог: цепочка рвётся на звене **Collector → Prometheus**. Флаг
+    `--enable-feature=exemplar-storage` в Prometheus **не поможет** — хранить
+    нечего. Варианты: обновление contrib после появления поддержки либо переход
+    на экспортёр `prometheus_remote_write`.
+  - **Прежняя гипотеза в этом документе была неверной.** Утверждалось, что дело в
+    одноразовости smoke-зонда («пишет метрику один раз и умирает до скрейпа»).
+    Это не так: `metric_expiration: 1h` удерживает серию, и Prometheus стабильно её
+    скрейпит (проверено — серия видна). Настоящая причина — баг экспортёра, см. выше.

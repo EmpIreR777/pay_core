@@ -88,6 +88,7 @@ Compose-файл лежит в корне (`docker-compose.yml`) намерен�
 | OTel Collector      | `otel/opentelemetry-collector-contrib:0.161.0` | OTLP: `localhost:4317` / `:4318`, метрики: `localhost:8889` / self: `localhost:8888` | `otel-collector:4317` |
 | Jaeger (traces)     | `jaegertracing/all-in-one:1.76.0`  | http://localhost:16686       | `jaeger:4317` (OTLP)       |
 | Prometheus (metrics)| `prom/prometheus:v3.15.0`          | http://localhost:9090        | `prometheus:9090`          |
+| Loki 3 (logs)       | `grafana/loki:3.5.12`             | http://localhost:3100        | `loki:3100/otlp` (OTLP/HTTP) |
 | Grafana             | `grafana/grafana:13.0.9`           | http://localhost:3000        | `grafana:3000`             |
 
 **Важные детали реализации:**
@@ -117,7 +118,8 @@ Compose-файл лежит в корне (`docker-compose.yml`) намерен�
 ```text
 app ──OTLP──► otel-collector ──┬─ traces ──► otlp_grpc/jaeger ──► jaeger:4317 ──► Jaeger UI :16686
    (:4317/:4318)                ├─ metrics ─► prometheus :8889 ──► Prometheus scrape (job otel-collector)
-                               └─ logs ────► debug (stdout)      ──► Loki подключим в Эпике 12
+                               └─ logs ────► otlp_http/loki ──► loki:3100/otlp ──► Loki UI :3100
+                                    (вторая ветка: debug → stdout, страховка на dev)
 ```
 
 | Слой | Компонент | Зачем |
@@ -128,7 +130,7 @@ app ──OTLP──► otel-collector ──┬─ traces ──► otlp_grpc/j
 | processor | `batch` | **Последним**: склеивает мелкие батчи (5s / 1024) перед отправкой |
 | exporter | `otlp_grpc/jaeger` | Трейсы в Jaeger с `sending_queue` + `retry_on_failure` — Jaeger перезапускается, трейсы досылаются |
 | exporter | `prometheus` | Публикует метрики на `:8889`; `enable_open_metrics` даёт exemplars (переход «из графика в трейс» в Grafana) |
-| exporter | `debug` | Логи по OTLP пока в stdout; заменяется на Loki-экспортёр в Эпике 12 |
+| exporter | `debug` | Дублирует логи в stdout Collector'а. `verbosity: detailed` — страховка на случай, если Loki недоступен. В проде ветку убирают |
 | extension | `health_check` (`:13133`) | Готовность Collector'а |
 
 **Два порта метрик — не путать:**
@@ -172,9 +174,92 @@ curl -sS http://localhost:8888/metrics | grep otelcol_exporter_sent_spans
 > использование старого имени валит конфиг с ошибкой запуска. Всегда сверяйтесь
 > с `otelcol-contrib components` под нужную версию образа.
 
-## ✅ Сквозная проверка Collector (T-0.8)
+## 📝 Loki — логи
 
-Конфиг Collector'а (T-0.7) проверен не только на валидность, но и **сквозным
+Конфиг: [`infra/loki/loki-config.yaml`](infra/loki/loki-config.yaml). Loki закрывает
+третий сигнал телеметрии и **единственный, который переживает рестарт контейнеров**:
+трейсы живут в RAM Jaeger и умирают вместе с ним, логи лежат в томе `loki-data`.
+
+```text
+app ──OTLP──► otel-collector ──logs──► otlp_http/loki ──HTTP POST──► loki:3100/otlp/v1/logs
+                                                                  └──► Loki UI :3100
+                                                                       └──► Grafana (datasource Loki)
+```
+
+| Слой | Решение | Зачем |
+|------|---------|-------|
+| exporter | `otlp_http/loki` | Экспортёра `loki` в contrib 0.161.0 **больше нет** (проверено `otelcol-contrib components`). Современный путь — нативный OTLP-приёмник Loki 3.x, шлюзом служит обычный `otlp_http` |
+| endpoint | `http://loki:3100/otlp` | Экспортёр сам дописывает `/v1/logs`. Если вписать `/v1/logs` вручную, получится `/otlp/v1/logs/v1/logs` → 404 |
+| exporter | `debug` (вторая ветка) | Страховка: при недоступном Loki логи не теряются. `verbosity: detailed` — при `basic` печатается только сводка «log records: 1» без содержимого |
+| storage | том `loki-data`, `retention_period: 168h` | Намеренно столько же, сколько `PROMETHEUS_RETENTION`. Разные окна у метрик и логов — источник путаницы «в Grafana метрика есть, а логов нет» |
+| разметка | `otlp_config.resource_attributes` | `service.namespace` и `deployment.environment` идут в **индекс** потока; `trace_id`/`span_id` — в structured metadata (дёшево, ищется, не раздувает индекс) |
+
+> ⚠️ **Кардинальность.** `index_label` попадает в индекс и перемножает число
+> потоков на диске. Поэтому `service.instance.id` и `trace_id` в индекс не
+> идут — иначе каждый перезапуск процесса плодил бы потоки.
+
+### Как выглядят наши логи в Loki
+
+Формат хранения в Loki — **потоки (streams)**, а не документы. Каждый поток = набор
+лейблов + текстовые строки. Наши логи лежат так:
+
+```
+line   : 'paycore otel smoke probe log record'     ← ТОЛЬКО тело сообщения
+ts     : 1790592758225851000                       ← наносекунды epoch
+stream : { ...лейблы и structured metadata... }
+```
+
+**Индексные лейблы** (по ним Loki реально фильтрует — их всего 4):
+| Лейбл | Значение | Откуда |
+|-------|----------|--------|
+| `service_name` | `paycore-otel-smoke` | от приложения |
+| `service_namespace` | `pay-core` | resource-процессор Collector'а |
+| `deployment_environment` | `local` | resource-процессор Collector'а |
+| `service_instance_id` | `87e611ce-…` | от приложения |
+
+Проверяется запросом:
+```bash
+curl -sS -G http://localhost:3100/loki/api/v1/labels | python3 -m json.tool
+```
+
+**Structured metadata** (приходит в ответе, но НЕ индексируется — по ней нельзя
+фильтровать, зато она почти бесплатна): `trace_id`, `span_id`, `severity_text`,
+`severity_number`, `detected_level`, `scope_name`, `service_version`, `flags`,
+`observed_timestamp`, `telemetry_sdk_*`, `paycore_smoke_probe`.
+
+> ⚠️ **Важное следствие для T-12.10.** Сейчас `trace_id` лежит в **structured
+> metadata**, а не в тексте строки. Значит фильтровать логи по трейсу
+> (`{...} | trace_id="..."`) **нельзя** — Loki не умеет искать по structured
+> metadata в LogQL. Два рабочих варианта:
+> 1. Писать `trace_id` в **тело** сообщения (structlog) — тогда заработает и
+>    фильтр, и `derivedFields` «клик по логу → трейс» из `datasources/loki.yml`.
+> 2. Поднять `trace_id` до **индексного лейбла** в `loki-config.yaml` — но это
+>    взорвёт кардинальность (один поток на каждый трейс), делать нельзя.
+>
+> Правильный выбор — вариант 1.
+
+### Удобная работа в Grafana
+
+| Что | Где | Как |
+|-----|-----|-----|
+| Поиск по логам | `http://localhost:3000/explore` → Loki | LogQL: `{service_name="payment-gateway"} \|= "error"` |
+| Панели логов | Дашборд `paycore-otel-overview` | Блок «📝 Логи приложений» внизу: поток логов + график активности |
+| Лог → трейс | Клик по `trace_id` в строке лога | `derivedFields` в `datasources/loki.yml` открывает трейс в Jaeger |
+| Сырой Loki | http://localhost:3100 | UI Loki с тем же LogQL |
+
+> Ссылки «лог → трейс» заработают, когда приложения начнут писать `trace_id`
+> в текст сообщения — это **T-12.10** (structlog с автоподмешиванием
+> `trace_id`/`span_id`). Сам Loki и поиск по нему уже работают.
+
+> ⚠️ **Grafana: uid datasource'ов заданы явно** (`jaeger`, `loki`) — на них
+> ссылается `derivedFields`. Автосгенерированный uid после пересоздания тома
+> Grafana сломал бы ссылки. Если меняете uid в `loki.yml` — меняйте и в
+> `jaeger.yml`. Миграция существующего стенда: `docker compose down -v grafana &&
+> docker compose up -d grafana` (всё восстановится из репозитория).
+
+## ✅ Сквозная проверка Collector
+
+Конфиг Collector'а проверен не только на валидность, но и **сквозным
 прогоном**: приложение с OTel SDK отправляет тестовые `span`, `metric` и
 `log` на `:4317`, и мы убеждаемся, что они доехали до Jaeger и Prometheus.
 
