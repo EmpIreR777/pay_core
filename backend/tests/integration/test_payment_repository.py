@@ -47,7 +47,7 @@ from src.core.config import settings
 from src.core_service.application import ports
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.entities.payment import Payment
-from src.core_service.domain.exceptions import EntityNotFoundError, InvalidValueError
+from src.core_service.domain.exceptions import EntityNotFoundError, InvalidValueError, OptimisticLockError
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
 from src.core_service.domain.value_objects.money import Money
@@ -816,3 +816,72 @@ async def test_find_by_status_issues_exactly_one_ordered_and_limited_select(
     assert 'ORDER BY payments.updated_at' in statements[0]
     assert 'LIMIT' in statements[0]
     assert 'JOIN accounts' in statements[0]
+
+
+# --- Оптимистичная блокировка по версии (T-3.6) --------------------------------
+
+
+async def test_optimistic_lock_rejects_concurrent_payment_change() -> None:
+    """DoD: гонка версий по платежу — вторая запись падает, а не стирает первую.
+
+    Оба сценария читают ``PENDING``-платёж с одной версией, первый переводит его в
+    ``PROCESSING`` (операция у провайдера уже начата), второй — в ``CANCELLED``.
+    Запись второго обязана упереться в версию: иначе отмена молча затёрла бы уже
+    начатую операцию, и вебхук по ней не нашёл бы наш платёж.
+    """
+    account = _account()
+    async with open_transaction() as setup:
+        await _store_account(setup, account)
+        payment = _payment(account)
+        await repository_for(setup).add(payment)
+        await setup.commit()
+
+    async with open_transaction() as first, open_transaction() as second:
+        first_repo, second_repo = repository_for(first), repository_for(second)
+        first_payment = await first_repo.get(payment.id)
+        second_payment = await second_repo.get(payment.id)
+        assert first_payment is not None
+        assert second_payment is not None
+        assert first_payment.persisted_version == second_payment.persisted_version
+
+        first_payment.process('ext-race')
+        await first_repo.update(first_payment)
+        await first.commit()
+
+        second_payment.cancel()
+        with pytest.raises(OptimisticLockError, match='переписала другая транзакция'):
+            await second_repo.update(second_payment)
+
+    async with open_transaction() as other:
+        stored = await repository_for(other).get(payment.id)
+    assert stored is not None
+    assert stored.status is PaymentStatus.PROCESSING
+    assert stored.provider_payment_id == 'ext-race'
+
+
+async def test_update_checks_payment_version_in_the_where_clause(
+    session: AsyncSession,
+    repository: PostgresPaymentRepository,
+) -> None:
+    """Условие по версии уходит в SQL: без него платежи переписывали бы друг друга.
+
+    Проверяется текст запроса, а не результат: ``UPDATE`` без ``version = ...``
+    вернул бы тот же статус и прошёл бы поведенческие тесты, а защиты от гонки в
+    нём не было бы.
+    """
+    account = _account()
+    await _store_account(session, account)
+    saved = _payment(account)
+    await repository.add(saved)
+    await session.commit()
+    # Идентификатор операции уникален в таблице: соседние тесты коммитят свои
+    # значения, и повтор чужого упёрся бы в уникальный индекс, а не в версию.
+    saved.process('ext-version-check')
+
+    statements = await capture_sql(session, repository.update(saved))
+    updates = [statement for statement in statements if statement.startswith('UPDATE payments')]
+
+    assert len(updates) == 1
+    assert 'payments.version =' in updates[0]
+    assert 'RETURNING payments.version' in updates[0]
+    assert len(statements) == 1

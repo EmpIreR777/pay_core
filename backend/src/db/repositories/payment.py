@@ -37,12 +37,12 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import Row, Select, select
+from sqlalchemy import Row, Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core_service.application.ports.payment_repository import DEFAULT_FIND_BY_STATUS_LIMIT
 from src.core_service.domain.entities.payment import Payment
-from src.core_service.domain.exceptions import EntityNotFoundError
+from src.core_service.domain.exceptions import EntityNotFoundError, OptimisticLockError
 from src.core_service.domain.validation import require_min_int, require_utc
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
@@ -158,36 +158,57 @@ class PostgresPaymentRepository:
         """
         self._session.add(new_payment_model(payment))
         await self._session.flush()
+        payment.mark_persisted()
 
     async def update(self, payment: Payment) -> None:
-        """Сохранить изменения существующего платежа.
+        """Сохранить изменения существующего платежа, защитившись от чужой записи.
 
         Пишутся смысловые поля — статус, идентификатор операции у провайдера,
         причина отказа и версия, то, чем домен владеет безусловно. Сумма и счёт
         платежа не пишутся: они неизменны по инварианту ``Payment``, а
         ``from_account_id`` вдобавок обслуживает внешний ключ.
 
-        ``updated_at`` после ``flush`` остаётся просроченным в объекте сессии:
-        значение вычислила база, и ORM не знает его. Дополнительный ``refresh``
-        здесь не нужен — проверено на живом Postgres, что следующий ``SELECT``
-        перечитывает просроченную метку, а чтения репозитория всегда идут через
-        ``SELECT``. Читать эту колонку из ORM-объекта **наружу** нельзя: такого
-        чтения здесь нет, а лишний обмен на каждый переход статуса платил бы
-        ничего. Вместе с лишним ``SELECT`` из ``session.get`` всё это исчезнет в
-        T-3.6, где ``update`` станет условным ``UPDATE`` по номеру версии.
+        Условие ``version = :persisted`` делает запись оптимистичной (T-3.6): два
+        сценария, прочитавшие один и тот же платёж, не перепишут статус друг за
+        другом молча. Ожидаемая версия приходит от агрегата — это то, что было
+        прочитано до переходов статуса. Повторный ``SELECT`` здесь не помог бы:
+        он вернул бы уже чужую версию, и потеря обновления осталась бы незамеченной.
+
+        ``updated_at`` проставляет база (``onupdate`` применяется и к этому
+        ``UPDATE``), поэтому метка последнего изменения остаётся на стороне
+        Postgres и не считается по двум часам. Прежний ``refresh`` после ``flush``
+        был не нужен и убран вместе с чтением ORM-модели: значения наружу отдаёт
+        ``SELECT``, перечитывающий просроченные атрибуты.
+
+        Ожидаемая версия нужна и на отказе, поэтому сверка идёт по
+        ``persisted_version`` **после** неудачного ``UPDATE``: ошибка уже говорит,
+        что в базе версия другая.
 
         :raises EntityNotFoundError: строки нет. Молчаливый выход означал бы
             потерянное движение денег: сценарий посчитал, что платёж у провайдера
             отклонён, а база об этом не узнала.
+        :raises OptimisticLockError: строку изменила другая транзакция между
+            чтением и сохранением. Статус придётся применять к перечитанному
+            платежу, а не записывать поверх чужого решения.
         """
-        model = await self._session.get(PaymentModel, payment.id.value)
-        if model is None:
+        result = await self._session.execute(
+            update(PaymentModel)
+            .where(PaymentModel.id == payment.id.value, PaymentModel.version == payment.persisted_version)
+            .values(
+                status=payment.status.value,
+                provider_payment_id=payment.provider_payment_id,
+                failure_reason=payment.failure_reason,
+                version=payment.version,
+            )
+            .returning(PaymentModel.version),
+        )
+        if result.first() is not None:
+            payment.mark_persisted()
+            return
+        found = await self._session.scalar(select(PaymentModel.id).where(PaymentModel.id == payment.id.value))
+        if found is None:
             raise EntityNotFoundError(f'Платёж {payment.id} не найден в базе: сохранять нечего')
-        model.status = payment.status.value
-        model.provider_payment_id = payment.provider_payment_id
-        model.failure_reason = payment.failure_reason
-        model.version = payment.version
-        await self._session.flush()
+        raise OptimisticLockError.for_version_conflict('Платёж', payment.id, payment.persisted_version)
 
     async def find_by_status(
         self,

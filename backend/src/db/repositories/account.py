@@ -25,21 +25,26 @@
   очередь, а не получить молчание и потерять деньги. Блокировка держится до конца
   транзакции — ровно столько, сколько нужно, чтобы решение, принятое по
   прочитанному балансу, было записано.
-* **Версия пишется, но не проверяется.** ``update`` сохраняет то ``version``,
-  которое выставил домен. Проверка «а не изменилась ли строка с тех пор, как её
-  прочитали» (``UPDATE ... WHERE version = :current``) — задача T-3.6; в T-3.3 она
-  была бы преждевременной, потому что блокировка строки уже закрывает гонку
-  внутри одной транзакции, а оптимистичный замок нужен там, где её не берут.
+* **Версия проверяется в самом ``UPDATE``.** ``update`` записывает то ``version``,
+  которое выставил домен, и добавляет условие ``version = :persisted``: если строку
+  успела переписать другая транзакция, запись не проходит с ``OptimisticLockError``
+  (T-3.6). Пессимистичная ``get_for_update`` и оптимистичная проверка не заменяют
+  друг друга: первая держит строку внутри одной транзакции, вторая ловит чужую
+  запись между чтением и сохранением, когда строку никто не блокировал.
+* **Ожидаемая версия берётся у агрегата, а не перечитывается.** Повторный ``SELECT``
+  перед ``UPDATE`` вернул бы уже чужую версию, условие совпало бы, и «последняя
+  запись» молча стёрла бы предыдущее движение денег. Поэтому ``update`` сверяется с
+  ``persisted_version`` — версией, прочитанной до изменений (T-3.6).
 * **Валюта при обновлении не пишется.** Она задаётся балансом при создании и
   доменом не меняется, поэтому в ``UPDATE`` баланса ей не место: колонка
   «обновилась бы сама в себя» только раздувает запрос, идущий на каждый платёж.
 """
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core_service.domain.entities.account import Account
-from src.core_service.domain.exceptions import EntityNotFoundError
+from src.core_service.domain.exceptions import EntityNotFoundError, OptimisticLockError
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId
 from src.core_service.domain.value_objects.money import Money
@@ -118,36 +123,48 @@ class PostgresAccountRepository:
         """
         self._session.add(new_account_model(account))
         await self._session.flush()
+        account.mark_persisted()
 
     async def update(self, account: Account) -> None:
-        """Сохранить изменения существующего счёта.
+        """Сохранить изменения существующего счёта, защитившись от чужой записи.
 
         Обновляются баланс, признак блокировки и версия — то, чем домен владеет
         безусловно. Валюта не пишется: она неизменна по инварианту ``Account``
         (задаётся балансом при создании), и переписывать её в том же ``UPDATE``
         незачем.
 
-        Строка читается заново, а не берётся из identity map сессии: map держит
-        модели по **слабым** ссылкам, и ``to_domain_account`` модель отпускает сразу
-        (наружу ушёл доменный объект), так что к моменту ``update`` кеш пуст и
-        ``session.get`` делает ``SELECT``. Лишнего обмена нет по смыслу — блокировка
-        строки держится на уровне БД до конца транзакции независимо от кеша, — но
-        он исчезнет сам в T-3.6, где ``update`` станет условным
-        ``UPDATE ... WHERE version = :current`` и перестанет читать строку вовсе.
-        Сейчас этот обмен платится за то, что ``update`` без предшествующего
-        ``get_for_update`` не защищён от гонки; закрывает это тоже T-3.6.
+        Запись оптимистичная (T-3.6): условие по версии выполняется, только если
+        строку не переписал кто-то ещё с момента чтения. Версию для сверки даёт сам
+        агрегат (``persisted_version``) — то значение, что было прочитано **до**
+        изменений. Повторный ``SELECT`` здесь не годится: перечитав строку прямо
+        перед ``UPDATE``, адаптер принял бы чужую запись за свою и молча потерял бы
+        одно из движений денег. Поэтому обмен идёт одним ``UPDATE``, а ``SELECT``
+        по идентификатору нужен только чтобы отличить «строки нет» от «строку
+        переписали» на отказе.
+
+        ``updated_at`` проставляет база: ``onupdate`` применяется и к этому
+        ``UPDATE``, так что метка изменения остаётся на стороне Postgres.
 
         :raises EntityNotFoundError: строки нет. Молчаливый выход здесь означал бы
             потерянное движение денег: сценарий посчитал, что пополнил счёт, а база
             об этом не узнала.
+        :raises OptimisticLockError: строку изменила другая транзакция между
+            чтением и сохранением. Решение принималось по устаревшему состоянию,
+            и его нужно строить заново — на перечитанном счёте.
         """
-        model = await self._session.get(AccountModel, account.id.value)
-        if model is None:
+        result = await self._session.execute(
+            update(AccountModel)
+            .where(AccountModel.id == account.id.value, AccountModel.version == account.persisted_version)
+            .values(balance=account.balance.amount, is_blocked=account.is_blocked, version=account.version)
+            .returning(AccountModel.version),
+        )
+        if result.first() is not None:
+            account.mark_persisted()
+            return
+        found = await self._session.scalar(select(AccountModel.id).where(AccountModel.id == account.id.value))
+        if found is None:
             raise EntityNotFoundError(f'Счёт {account.id} не найден: сохранять нечего')
-        model.balance = account.balance.amount
-        model.is_blocked = account.is_blocked
-        model.version = account.version
-        await self._session.flush()
+        raise OptimisticLockError.for_version_conflict('Счёт', account.id, account.persisted_version)
 
     def _select(self, account_id: AccountId) -> Select[tuple[AccountModel]]:
         """Запрос чтения одного счёта.

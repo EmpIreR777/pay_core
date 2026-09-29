@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from src.core.config import settings
 from src.core_service.application import ports
 from src.core_service.domain.entities.account import Account
-from src.core_service.domain.exceptions import EntityNotFoundError
+from src.core_service.domain.exceptions import EntityNotFoundError, OptimisticLockError
 from src.core_service.domain.value_objects.currency import Currency
 from src.core_service.domain.value_objects.identifiers import AccountId
 from src.core_service.domain.value_objects.money import Money
@@ -479,3 +479,92 @@ async def test_plain_get_does_not_lock_the_row(
 
     assert len(statements) == 1
     assert 'FOR UPDATE' not in statements[0]
+
+
+# --- Оптимистичная блокировка по версии (T-3.6) --------------------------------
+
+
+async def test_optimistic_lock_rejects_concurrent_version_change() -> None:
+    """DoD: гонка версий — вторая запись обязана упасть, а не потеряться.
+
+    Две транзакции читают один и тот же счёт с одной версией (без ``FOR UPDATE``:
+    блокировка просто поставила бы вторую в очередь и не проверила оптимистичный
+    замок). Первая сохраняет изменение, вторая пробует записать поверх — и обязана
+    получить ``OptimisticLockError``: решение второй принималось по устаревшему
+    балансу, и записывать его поверх чужого нельзя.
+
+    Ожидаемая версия берётся из объекта, а не перечитывается. Если бы ``update``
+    делал ``SELECT`` непосредственно перед ``UPDATE``, он увидел бы уже новую
+    версию, условие совпало бы, а потеря обновления осталась бы незамеченной —
+    тест ловит именно это.
+    """
+    account = _account()
+    async with open_transaction() as setup:
+        await repository_for(setup).add(account)
+        await setup.commit()
+
+    async with open_transaction() as first, open_transaction() as second:
+        first_repo, second_repo = repository_for(first), repository_for(second)
+        first_account = await first_repo.get(account.id)
+        second_account = await second_repo.get(account.id)
+        assert first_account is not None
+        assert second_account is not None
+        assert first_account.persisted_version == second_account.persisted_version
+
+        first_account.withdraw(Money.from_number(AMOUNT, Currency.RUB))
+        await first_repo.update(first_account)
+        await first.commit()
+
+        second_account.deposit(Money.from_number(AMOUNT, Currency.RUB))
+        with pytest.raises(OptimisticLockError, match='переписала другая транзакция'):
+            await second_repo.update(second_account)
+
+    # Победа осталась за первой транзакцией: чужая правка не стёрла её движение.
+    assert await _committed_balance(account.id) == BALANCE - AMOUNT
+
+
+async def test_update_can_be_repeated_on_the_same_entity(repository: PostgresAccountRepository) -> None:
+    """Повторное сохранение того же объекта не упирается в свой же оптимистичный замок.
+
+    После успешного ``update`` ожидаемая версия объекта обязана сдвинуться на
+    записанную: иначе второе сохранение сверялось бы с версией, которой в базе уже
+    нет, и падало бы на ровном месте.
+    """
+    account = _account()
+    await repository.add(account)
+    account.withdraw(Money.from_number(AMOUNT, Currency.RUB))
+    await repository.update(account)
+    account.deposit(Money.from_number(AMOUNT, Currency.RUB))
+    await repository.update(account)
+
+    reloaded = await repository.get(account.id)
+
+    assert reloaded is not None
+    assert reloaded.balance == Money.from_number(BALANCE, Currency.RUB)
+    assert reloaded.version == account.version
+
+
+async def test_update_checks_version_in_the_where_clause(
+    session: AsyncSession,
+    repository: PostgresAccountRepository,
+) -> None:
+    """Условие по версии реально уходит в SQL, а не остаётся намерением в коде.
+
+    ``UPDATE`` без ``version = ...`` в ``WHERE`` вернул бы те же данные и прошёл бы
+    поведенческие тесты, но оптимистичной блокировки в нём не было бы вовсе.
+    Проверяется и то, что сверки предшествующим ``SELECT`` нет: версия уже есть у
+    агрегата, а лишний обмен на каждую запись баланса — прямая цена.
+    """
+    account = _account()
+    await repository.add(account)
+    await session.commit()
+    account.withdraw(Money.from_number(AMOUNT, Currency.RUB))
+
+    statements = await capture_sql(session, repository.update(account))
+    updates = [statement for statement in statements if statement.startswith('UPDATE accounts')]
+
+    assert len(updates) == 1
+    assert 'accounts.version =' in updates[0]
+    assert 'RETURNING accounts.version' in updates[0]
+    assert 'updated_at=now()' in updates[0]
+    assert len(statements) == 1
