@@ -9,12 +9,10 @@ dependencies = [
     "asyncpg>=0.30.0",
     "fastapi>=0.115.0",
     "greenlet>=3.5.3",
-    "psycopg2-binary>=2.9.12",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "python-multipart>=0.0.20",
     "sqlalchemy[asyncio]>=2.0.36",
-    "sqlalchemy-utils>=0.41.1",
     "taskiq>=0.11.0",
     "uvicorn[standard]>=0.34.0",
     "redis>=5.2.0",
@@ -164,12 +162,6 @@ exclude = [
     "alembic/",
     "storage/",
 ]
-
-[[tool.mypy.overrides]]
-module = [
-    "sqlalchemy_utils.*",
-]
-ignore_missing_imports = true
 
 [tool.codespell]
 ignore-words-list = "selectin,ot"

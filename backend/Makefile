@@ -7,8 +7,8 @@ SHELL := /bin/bash
 
 .PHONY: help install lint format pre-commit pre-commit-install \
         test test-cov test-cov-domain test-cov-application test-unit test-integration \
-        migrate alembic-rev alembic-down \
-        gen-proto run-api run-core run-workers run-tasks run-scheduler otel-smoke \
+        migrate migrate-down migrate-down-base migrate-current migrate-check migrate-sql \
+        alembic-rev gen-proto run-api run-core run-workers run-tasks run-scheduler otel-smoke \
         clean-cache
 
 # ------------------------------------------------------------------------------
@@ -67,11 +67,24 @@ test-cov-application: ## Запустить тесты с проверкой п�
 # ------------------------------------------------------------------------------
 # Database
 # ------------------------------------------------------------------------------
-migrate: ## Применить миграции Alembic (upgrade head)
+migrate: ## Применить миграции Alembic до head
 	uv run alembic upgrade head
 
-alembic-down: ## Откатить последнюю миграцию
+migrate-down: ## Откатить последнюю миграцию
 	uv run alembic downgrade -1
+
+migrate-down-base: ## Откатить все миграции (полная очистка схемы)
+	uv run alembic downgrade base
+
+migrate-current: ## Показать применённую ревизию и заголовки ревизий
+	uv run alembic current
+	uv run alembic heads
+
+migrate-check: ## Проверить, что схема в БД совпадает с моделями
+	uv run alembic check
+
+migrate-sql: ## Показать SQL миграций без применения (--sql)
+	uv run alembic upgrade head --sql
 
 alembic-rev: ## Создать ревизию: make alembic-rev m='add users'
 	./alembic_rev.sh "$(m)"
