@@ -27,14 +27,13 @@ Postgres модуль пропускается — `make test` обязан ос
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Coroutine
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, event, text
+from sqlalchemy import delete, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from src.core.config import settings
 from src.core_service.application import ports
@@ -46,13 +45,9 @@ from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.versioning import INITIAL_VERSION
 from src.db.models.account import AccountModel
 from src.db.repositories import PostgresAccountRepository, new_account_model
+from tests.integration.conftest import LOCK_WAIT_SECONDS, capture_sql, open_transaction
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures('postgres_stack')]
-
-#: Сколько ждать чужую блокировку строки, прежде чем признать её отсутствующей.
-#: Проверка блокировки обязана иметь потолок: без него тест, в котором `FOR UPDATE`
-#: не сработал, провисел бы до бесконечного ожидания вместо честного падения.
-LOCK_WAIT_SECONDS = 5
 
 #: Баланс и сумма операции в тестах. Берутся из ``Decimal``, а не из ``float``:
 #: в деньгах ``float`` недопустим, и тест обязан это демонстрировать, а не
@@ -88,24 +83,6 @@ def clean_accounts_table() -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    """Сессия одной транзакции, которая по выходу откатывается.
-
-    Отдельный движок на каждый тест не нужен: у каждой сессии своё соединение, а
-    ``rollback`` в ``finally`` выполняется даже после падения теста — иначе
-    следующий тест унаследовал бы незакрытую транзакцию и завис на блокировке.
-    """
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    session_maker = async_sessionmaker(engine, class_=AsyncSession, autoflush=False, expire_on_commit=False)
-    try:
-        async with session_maker() as open_session:
-            yield open_session
-            await open_session.rollback()
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
 def repository(session: AsyncSession) -> PostgresAccountRepository:
     """Репозиторий поверх сессии фикстуры: ровно так его поднимет UoW (T-3.5)."""
     return PostgresAccountRepository(session)
@@ -119,28 +96,6 @@ def repository_for(session: AsyncSession) -> PostgresAccountRepository:
     читается честнее, чем плодить фикстуры под каждую транзакцию.
     """
     return PostgresAccountRepository(session)
-
-
-async def _capture_sql(session: AsyncSession, operation: Coroutine[object, object, object]) -> list[str]:
-    """Выполнить операцию и вернуть SQL-запросы, которые она отправила в базу.
-
-    Нужен там, где важно не «что вернулось», а «сколько и каких запросов ушло на
-    сервер»: лишний ``SELECT`` или потерянное ``FOR UPDATE`` возвращают те же данные,
-    поэтому результат их не различает.
-    """
-    statements: list[str] = []
-
-    def record(_conn: object, _cursor: object, statement: str, _params: object, _ctx: object, _many: object) -> None:
-        statements.append(' '.join(statement.split()))
-
-    engine = session.get_bind()
-    sync_engine = getattr(engine, 'sync_engine', engine)
-    event.listen(sync_engine, 'before_cursor_execute', record)
-    try:
-        await operation
-    finally:
-        event.remove(sync_engine, 'before_cursor_execute', record)
-    return statements
 
 
 def _account(currency: Currency = Currency.RUB, balance: Decimal = BALANCE) -> Account:
@@ -175,33 +130,6 @@ async def _committed_balance(account_id: AccountId) -> Decimal | None:
             )
             row = result.first()
             return None if row is None else row[0]
-    finally:
-        await engine.dispose()
-
-
-@asynccontextmanager
-async def _open_transaction(*, lock_wait_seconds: int | None = None) -> AsyncIterator[AsyncSession]:
-    """Отдельная транзакция на своём соединении, откатываемая на выходе.
-
-    Нужна там, где участвуют две одновременные транзакции: сессия фикстуры живёт
-    на своём соединении и второй транзакции из неё не получить. ``lock_timeout``
-    задаётся в миллисекундах через ``SET LOCAL`` — он действует до конца транзакции
-    и не требует прав на уровне базы, поэтому проверка блокировки укладывается в
-    конечное время вместо бесконечного ожидания.
-    """
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    session_maker = async_sessionmaker(engine, class_=AsyncSession, autoflush=False, expire_on_commit=False)
-    try:
-        async with session_maker() as transaction_session:
-            await transaction_session.begin()
-            try:
-                if lock_wait_seconds is not None:
-                    # SET LOCAL действует до конца транзакции, поэтому порядок
-                    # обязателен: транзакция должна быть уже открыта.
-                    await transaction_session.execute(text(f'SET LOCAL lock_timeout = {lock_wait_seconds * 1000}'))
-                yield transaction_session
-            finally:
-                await transaction_session.rollback()
     finally:
         await engine.dispose()
 
@@ -461,11 +389,11 @@ async def test_get_for_update_blocks_another_transaction_until_first_commits() -
     блокировки нет, обязан упасть сразу, а не пройти по счастливому случаю.
     """
     account = _account()
-    async with _open_transaction() as setup:
+    async with open_transaction() as setup:
         await repository_for(setup).add(account)
         await setup.commit()
 
-    async with _open_transaction() as first:
+    async with open_transaction() as first:
         repository = repository_for(first)
         locked = await repository.get_for_update(account.id)
         assert locked is not None
@@ -473,7 +401,7 @@ async def test_get_for_update_blocks_another_transaction_until_first_commits() -
         await repository.update(locked)
 
         # Вторая транзакция обязана упереться в блокировку первой.
-        async with _open_transaction(lock_wait_seconds=LOCK_WAIT_SECONDS) as second:
+        async with open_transaction(lock_wait_seconds=LOCK_WAIT_SECONDS) as second:
             with pytest.raises(DBAPIError, match=r'lock timeout|canceling statement'):
                 await repository_for(second).get_for_update(account.id)
 
@@ -492,7 +420,7 @@ async def test_second_transaction_sees_committed_balance_after_lock_is_released(
     успевал бы решить по устаревшему балансу, и одно из двух списаний потерялось бы.
     """
     account = _account()
-    async with _open_transaction() as first:
+    async with open_transaction() as first:
         await repository_for(first).add(account)
         locked = await repository_for(first).get_for_update(account.id)
         assert locked is not None
@@ -500,7 +428,7 @@ async def test_second_transaction_sees_committed_balance_after_lock_is_released(
         await repository_for(first).update(locked)
         await first.commit()
 
-    async with _open_transaction(lock_wait_seconds=LOCK_WAIT_SECONDS) as second:
+    async with open_transaction(lock_wait_seconds=LOCK_WAIT_SECONDS) as second:
         seen = await repository_for(second).get_for_update(account.id)
 
     assert seen is not None
@@ -524,7 +452,7 @@ async def test_get_for_update_issues_exactly_one_locking_select(
     await repository.add(account)
     await session.commit()
 
-    statements = await _capture_sql(session, repository.get_for_update(account.id))
+    statements = await capture_sql(session, repository.get_for_update(account.id))
 
     assert len(statements) == 1
     assert statements[0].startswith('SELECT accounts.id')
@@ -547,7 +475,7 @@ async def test_plain_get_does_not_lock_the_row(
     await repository.add(account)
     await session.commit()
 
-    statements = await _capture_sql(session, repository.get(account.id))
+    statements = await capture_sql(session, repository.get(account.id))
 
     assert len(statements) == 1
     assert 'FOR UPDATE' not in statements[0]

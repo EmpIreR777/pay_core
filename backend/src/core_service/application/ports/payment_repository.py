@@ -6,11 +6,17 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.value_objects.identifiers import PaymentId
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
+
+#: Сколько платежей отдаёт ``find_by_status``, если вызывающий не задал предел.
+#: Значение живёт в контракте, а не в адаптере хранилища: предел по умолчанию —
+#: часть соглашения между сценарием и базой (сверка идёт порциями), и вторая
+#: копия числа в Postgres-репозитории рано или поздно разошлась бы с портом.
+DEFAULT_FIND_BY_STATUS_LIMIT: Final[int] = 100
 
 
 @runtime_checkable
@@ -44,7 +50,7 @@ class PaymentRepository(Protocol):
         self,
         status: PaymentStatus,
         *,
-        limit: int = 100,
+        limit: int = DEFAULT_FIND_BY_STATUS_LIMIT,
         updated_before: datetime | None = None,
     ) -> Sequence[Payment]:
         """Возвращает платежи в заданном статусе, от старых к новым.
