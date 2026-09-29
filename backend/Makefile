@@ -51,7 +51,7 @@ test: ## Запустить все тесты (unit + integration)
 test-unit: ## Запустить только быстрые unit-тесты (без стенда)
 	uv run pytest tests/unit
 
-test-integration: ## Запустить интеграционные тесты (нужен поднятый стенд: make up)
+test-integration: ## Запустить интеграционные тесты (Postgres: стенд или testcontainer; observability: make up)
 	uv run pytest tests/integration -m integration
 
 test-cov: ## Запустить тесты с отчётом покрытия

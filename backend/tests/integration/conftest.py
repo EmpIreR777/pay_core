@@ -1,12 +1,16 @@
 """Общие фикстуры для интеграционных тестов.
 
-Интеграционные тесты ходят по живому стенду (``make up`` в корне репозитория).
+Postgres тесты получают через ``postgres_stack``: сначала живой стенд
+(``make up`` в корне репозитория), а при его отсутствии — временный контейнер
+testcontainer (T-3.7), поэтому ``pytest tests/integration/`` работает
+автономно.
 Каждый набор проверок завязан на свой стенд, и фикстуры готовности **явные**:
 раньше одна autouse-фикстура observability молча пропускала весь каталог, и
 интеграционный тест репозитория счетов (T-3.3) не запускался бы на машине, где
 поднят только Postgres. Теперь ``observability_stack`` и ``postgres_stack``
 запрашиваются явно — тестом или его модулем, — и подменяют друг друга только
-там, где это правда.
+там, где это правда. Observability-стенд testcontainer не поднимает: эти тесты
+по-прежнему ждут ``make up``.
 
 Здесь же живёт общая обвязка работы с Postgres: сессия одной откатываемой
 транзакции, отдельная транзакция на своём соединении и перехват SQL. Репозитории
@@ -14,22 +18,28 @@
 видимость из чужого соединения, «сколько запросов ушло на сервер», — и копия
 этой обвязки в каждом модуле разошлась бы с первой же правкой.
 
-Без стенда тесты пропускаются, а не падают: ``make test`` обязан оставаться
-зелёным на машине без Docker (AGENT.md, §5).
+Нет ни стенда, ни Docker — тесты пропускаются, а не падают: ``make test``
+обязан оставаться зелёным на машине без Docker (AGENT.md, §5).
 """
 
+import asyncio
+import os
 import socket
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
+import docker
 import pytest
+from alembic import command
 from sqlalchemy import delete, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from testcontainers.community.postgres import PostgresContainer
 
 from src.core.config import settings
 from src.db.models.account import AccountModel
 from src.db.models.payment import PaymentModel
+from src.run_migrations import build_alembic_config, verify_schema, wait_for_database
 
 #: Порты стенда из docker-compose.yml. ENV-переопределения не поддерживаем:
 #: тесты идут против дефолтного compose-конфига репозитория, иначе пришлось бы
@@ -49,6 +59,16 @@ COLLECTOR_HEALTH_URL = f'http://localhost:{COLLECTOR_HEALTH_PORT}/'
 #: (корень отдаёт 404), self-метрики Collector'а — на соседнем порту.
 COLLECTOR_METRICS_URL = f'http://localhost:{COLLECTOR_METRICS_PORT}/metrics'
 COLLECTOR_SELF_METRICS_URL = f'http://localhost:{COLLECTOR_SELF_METRICS_PORT}/metrics'
+
+#: Образ и реквизиты временного Postgres testcontainer (T-3.7). Образ — тот же,
+#: что в docker-compose.yml: тесты обязаны ходить в ту же версию БД, что и
+#: стенд, иначе проверяется не продовая инфраструктура. Реквизиты задаются
+#: явно: PostgresContainer читает POSTGRES_* из окружения, и настройка машины
+#: незаметно подменила бы DSN тестового контейнера.
+POSTGRES_TEST_IMAGE = 'postgres:16-alpine'
+POSTGRES_TEST_USER = 'postgres'
+POSTGRES_TEST_PASSWORD = 'postgres'
+POSTGRES_TEST_DB = 'pay_core'
 
 
 def is_tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -94,13 +114,75 @@ def postgres_is_reachable() -> bool:
         return False
 
 
+def docker_daemon_is_reachable() -> bool:
+    """Отвечает ли Docker-демон — он нужен, чтобы поднять временный Postgres.
+
+    Проверка — ``ping`` по API Docker: она не создаёт контейнеров и
+    завершается быстро, когда демона нет. Без неё падение ``start`` выглядело
+    бы как поломка тестов вместо привычного skip (AGENT.md, §5).
+    """
+    try:
+        docker.from_env().ping()
+    except docker.errors.DockerException:
+        return False
+    return True
+
+
 @pytest.fixture(scope='session')
-def postgres_stack() -> None:
-    """Пропустить тест, если Postgres не поднят (``make up`` в корне репозитория)."""
-    if not postgres_is_reachable():
+def postgres_stack() -> Iterator[None]:
+    """Обеспечить интеграционным тестам Postgres: стенд, а при его отсутствии — testcontainer.
+
+    Первым проверяется живой стенд (``make up`` в корне репозитория): на нём
+    тесты видят compose-инфраструктуру репозитория. Стенда нет — поднимается
+    временный контейнер ``POSTGRES_TEST_IMAGE`` (DoD T-3.7: ``pytest
+    tests/integration/`` работает автономно), и к нему здесь же применяются
+    миграции: контейнер приходит с пустой базой, а схему ждут и репозитории,
+    и тесты миграций. DSN контейнера подставляется в ``settings.DATABASE_URL``
+    на время сессии — вся обвязка читает настройки в момент работы, поэтому
+    правка её сигнатур не потребовалась.
+
+    Ни стенда, ни Docker — skip, а не падение: ``make test`` обязан оставаться
+    зелёным на машине без Docker (AGENT.md, §5).
+    """
+    if postgres_is_reachable():
+        yield
+        return
+
+    if not docker_daemon_is_reachable():
         pytest.skip(
-            'Postgres недоступен по DATABASE_URL. Поднимите стенд: `make up` в корне репозитория.',
+            'Postgres недоступен по DATABASE_URL, а Docker для testcontainer не отвечает: '
+            'поднимите стенд (`make up` в корне репозитория) или запустите Docker.',
         )
+
+    # Ryuk — репер testcontainers — монтирует docker-сокет хоста в свой контейнер.
+    # На Colima сокет из docker context (`~/.colima/default/docker.sock`) не виден
+    # внутри VM, и старт контейнера падает с 500 («operation not supported» при
+    # mkdir сокета). Репер здесь не нужен: контейнер останавливается в finally
+    # ниже, а без него худший исход — осиротевший контейнер после жёсткого
+    # убийства pytest, видимый в `docker ps` по лейблу testcontainers.
+    # setdefault уважает явно заданное окружение.
+    os.environ.setdefault('TESTCONTAINERS_RYUK_DISABLED', 'true')
+
+    container = PostgresContainer(
+        POSTGRES_TEST_IMAGE,
+        username=POSTGRES_TEST_USER,
+        password=POSTGRES_TEST_PASSWORD,
+        dbname=POSTGRES_TEST_DB,
+        driver='asyncpg',
+    )
+    container.start()
+    original_url = settings.DATABASE_URL
+    try:
+        settings.DATABASE_URL = container.get_connection_url()
+        # Миграции берут DSN из настроек, поэтому подмена выше видна им без
+        # отдельной передачи; wait/verify — существующие хелперы run_migrations.
+        asyncio.run(wait_for_database())
+        command.upgrade(build_alembic_config(), 'head')
+        asyncio.run(verify_schema())
+        yield
+    finally:
+        settings.DATABASE_URL = original_url
+        container.stop()
 
 
 #: Сколько ждать чужую блокировку строки, прежде чем признать её отсутствующей.
