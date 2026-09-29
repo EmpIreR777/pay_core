@@ -11,9 +11,7 @@ DDL, и тем более ничего — про то, что откат не �
 """
 
 import asyncio
-import socket
 from collections.abc import Iterator
-from urllib.parse import urlparse
 
 import pytest
 from alembic import command
@@ -23,7 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from src.core.config import settings
 from src.run_migrations import EXPECTED_TABLES, build_alembic_config
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures('postgres_stack')]
 
 #: Служебная таблица Alembic переживает откат: в ней хранится номер ревизии, и
 #: без неё Alembic не поймёт, с чего продолжать. Единственная таблица, которая
@@ -37,20 +35,6 @@ TABLES_QUERY = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
 
 #: Проверка того, что частичный индекс outbox ушёл вместе с таблицей.
 INDEX_QUERY = "SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ix_outbox_unpublished'"
-
-
-def postgres_is_reachable() -> bool:
-    """Отвечает ли Postgres по адресу из ``DATABASE_URL``.
-
-    Проверка идёт «сырым» сокетом по хосту и порту из DSN: так она не тянет за
-    собой соединение и завершается быстро, когда стенда нет.
-    """
-    parsed = urlparse(settings.DATABASE_URL)
-    try:
-        with socket.create_connection((parsed.hostname or 'localhost', parsed.port or 5432), timeout=2.0):
-            return True
-    except OSError:
-        return False
 
 
 async def query_first_value(query: str) -> object | None:
@@ -74,15 +58,6 @@ async def list_public_tables() -> set[str]:
             return {str(row[0]) for row in rows}
     finally:
         await engine.dispose()
-
-
-@pytest.fixture(scope='module', autouse=True)
-def postgres_stack() -> None:
-    """Пропустить модуль, если Postgres не поднят (``make up`` в корне)."""
-    if not postgres_is_reachable():
-        pytest.skip(
-            'Postgres недоступен по DATABASE_URL. Поднимите стенд: `make up` в корне репозитория.',
-        )
 
 
 @pytest.fixture(autouse=True)

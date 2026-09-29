@@ -1,13 +1,23 @@
 """Общие фикстуры для интеграционных тестов.
 
-Интеграционные тесты T-0.8 ходят по HTTP в уже поднятый стенд (``make up``).
-Если стенд не поднят, тесты пропускаются, а не падают: ``make test`` обязан
-оставаться зелёным на машине без Docker.
+Интеграционные тесты ходят по живому стенду (``make up`` в корне репозитория).
+Каждый набор проверок завязан на свой стенд, и фикстуры готовности **явные**:
+раньше одна autouse-фикстура observability молча пропускала весь каталог, и
+интеграционный тест репозитория счетов (T-3.3) не запускался бы на машине, где
+поднят только Postgres. Теперь ``observability_stack`` и ``postgres_stack``
+запрашиваются явно — тестом или его модулем, — и подменяют друг друга только
+там, где это правда.
+
+Без стенда тесты пропускаются, а не падают: ``make test`` обязан оставаться
+зелёным на машине без Docker (AGENT.md, §5).
 """
 
 import socket
+from urllib.parse import urlparse
 
 import pytest
+
+from src.core.config import settings
 
 #: Порты стенда из docker-compose.yml. ENV-переопределения не поддерживаем:
 #: тесты идут против дефолтного compose-конфига репозитория, иначе пришлось бы
@@ -38,9 +48,9 @@ def is_tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-@pytest.fixture(scope='session', autouse=True)
+@pytest.fixture(scope='session')
 def observability_stack() -> None:
-    """Пропускает интеграционные тесты, если стенд observability не поднят.
+    """Пропустить тест, если стенд observability не поднят.
 
     Порты берутся из тех же констант, что и URL проверок, — иначе легко получить
     «тест падает вместо skip» (схема доступности разъезжается с адресами).
@@ -55,4 +65,27 @@ def observability_stack() -> None:
     if unavailable:
         pytest.skip(
             'Стенд observability не поднят (' + ', '.join(unavailable) + '). Запустите `make up` в корне репозитория.',
+        )
+
+
+def postgres_is_reachable() -> bool:
+    """Отвечает ли Postgres по адресу из ``DATABASE_URL``.
+
+    Проверка идёт «сырым» сокетом по хосту и порту из DSN: так она не тянет за
+    собой соединение и завершается быстро, когда стенда нет.
+    """
+    parsed = urlparse(settings.DATABASE_URL)
+    try:
+        with socket.create_connection((parsed.hostname or 'localhost', parsed.port or 5432), timeout=2.0):
+            return True
+    except OSError:
+        return False
+
+
+@pytest.fixture(scope='session')
+def postgres_stack() -> None:
+    """Пропустить тест, если Postgres не поднят (``make up`` в корне репозитория)."""
+    if not postgres_is_reachable():
+        pytest.skip(
+            'Postgres недоступен по DATABASE_URL. Поднимите стенд: `make up` в корне репозитория.',
         )
