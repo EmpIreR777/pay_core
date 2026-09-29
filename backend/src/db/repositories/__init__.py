@@ -1,4 +1,4 @@
-"""Репозитории на async SQLAlchemy (T-3.3, T-3.4).
+"""Репозитории и единица работы на async SQLAlchemy (T-3.3, T-3.4, T-3.5).
 
 Пакет собран как единая точка входа по той же причине, что и ``src.db.models``:
 реализаций портов несколько (счета T-3.3, платежи T-3.4), и ``UnitOfWork``
@@ -27,10 +27,12 @@ from src.db.repositories.payment import (
     new_payment_model,
     to_domain_payment,
 )
+from src.db.repositories.unit_of_work import PostgresUnitOfWork
 
 __all__ = (
     'PostgresAccountRepository',
     'PostgresPaymentRepository',
+    'PostgresUnitOfWork',
     'new_account_model',
     'new_payment_model',
     'to_domain_account',

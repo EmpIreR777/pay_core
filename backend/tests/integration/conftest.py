@@ -24,10 +24,12 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 import pytest
-from sqlalchemy import event, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import delete, event, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.config import settings
+from src.db.models.account import AccountModel
+from src.db.models.payment import PaymentModel
 
 #: Порты стенда из docker-compose.yml. ENV-переопределения не поддерживаем:
 #: тесты идут против дефолтного compose-конфига репозитория, иначе пришлось бы
@@ -107,6 +109,35 @@ def postgres_stack() -> None:
 LOCK_WAIT_SECONDS = 5
 
 
+def build_session_maker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Фабрика сессий с настройками приложения.
+
+    ``autoflush=False`` обязателен: репозитории пишут явным ``flush``, иначе
+    ``INSERT`` уехал бы в момент коммита, а ошибку ограничения ждал бы уже
+    транзакционный код. ``expire_on_commit=False`` — чтобы считанные сущности не
+    становились непригодными после фиксации. Параметры живут здесь, а не в
+    каждом модуле: три одинаковые копии разъедутся с первой же правкой.
+    """
+    return async_sessionmaker(engine, class_=AsyncSession, autoflush=False, expire_on_commit=False)
+
+
+async def clear_payment_data() -> None:
+    """Очистить ``payments`` и ``accounts`` перед модулем тестов и после него.
+
+    Отдельное соединение с ``autocommit``-подобным поведением: у вызывающего
+    транзакции может быть не видно, и ``DELETE`` внутри её откатился бы вместе с
+    ней. Порядок обязателен — ``payments`` ссылается на ``accounts`` с
+    ``ON DELETE RESTRICT``.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(delete(PaymentModel))
+            await connection.execute(delete(AccountModel))
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     """Сессия одной транзакции, которая по выходу откатывается.
@@ -116,9 +147,8 @@ async def session() -> AsyncIterator[AsyncSession]:
     унаследовал бы незакрытую транзакцию и завис на блокировке.
     """
     engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    session_maker = async_sessionmaker(engine, class_=AsyncSession, autoflush=False, expire_on_commit=False)
     try:
-        async with session_maker() as open_session:
+        async with build_session_maker(engine)() as open_session:
             yield open_session
             await open_session.rollback()
     finally:
@@ -136,9 +166,8 @@ async def open_transaction(*, lock_wait_seconds: int | None = None) -> AsyncIter
     конечное время вместо бесконечного ожидания.
     """
     engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    session_maker = async_sessionmaker(engine, class_=AsyncSession, autoflush=False, expire_on_commit=False)
     try:
-        async with session_maker() as transaction_session:
+        async with build_session_maker(engine)() as transaction_session:
             await transaction_session.begin()
             try:
                 if lock_wait_seconds is not None:
