@@ -91,7 +91,7 @@ Observability:
 |---|---|---|---|---|
 | **0** | **Bootstrap репозитория** | [docs/plan/epic-00-bootstrap/plan.md](docs/plan/epic-00-bootstrap/plan.md) | `[x] DONE` | `[x]` |
 | **1** | **Domain Layer** | [docs/plan/epic-01-domain/plan.md](docs/plan/epic-01-domain/plan.md) | `[x] DONE` | `[x]` |
-| **2** | **Application Layer (Use-cases & Ports)** | [docs/plan/epic-02-application/plan.md](docs/plan/epic-02-application/plan.md) | `[ ] TODO` | `[ ]` |
+| **2** | **Application Layer (Use-cases & Ports)** | [docs/plan/epic-02-application/plan.md](docs/plan/epic-02-application/plan.md) | `[x] DONE` | `[x]` |
 | **3** | **Postgres Infrastructure** | [docs/plan/epic-03-postgres/plan.md](docs/plan/epic-03-postgres/plan.md) | `[ ] TODO` | `[ ]` |
 | **4** | **Idempotency** | [docs/plan/epic-04-idempotency/plan.md](docs/plan/epic-04-idempotency/plan.md) | `[ ] TODO` | `[ ]` |
 | **5** | **Distributed Locks** | [docs/plan/epic-05-distributed-locks/plan.md](docs/plan/epic-05-distributed-locks/plan.md) | `[ ] TODO` | `[ ]` |
