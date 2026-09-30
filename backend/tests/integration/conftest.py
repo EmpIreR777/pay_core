@@ -13,10 +13,18 @@ testcontainer (T-3.7), поэтому ``pytest tests/integration/`` работа
 по-прежнему ждут ``make up``.
 
 Здесь же живёт общая обвязка работы с Postgres: сессия одной откатываемой
-транзакции, отдельная транзакция на своём соединении и перехват SQL. Репозитории
-платежей (T-3.4) и счетов (T-3.3) проверяются одинаково — изоляция транзакции,
-видимость из чужого соединения, «сколько запросов ушло на сервер», — и копия
-этой обвязки в каждом модуле разошлась бы с первой же правкой.
+транзакции, отдельная транзакция на своём соединении, перехват SQL и чтение
+каталога БД. Репозитории платежей (T-3.4) и счетов (T-3.3) проверяются одинаково —
+изоляция транзакции, видимость из чужого соединения, «сколько запросов ушло на
+сервер», — и копия этой обвязки в каждом модуле разошлась бы с первой же правки.
+То же касается каталога: его читают и проверки миграций (T-3.2), и проверки схемы
+конкретных таблиц (T-4.1), поэтому запросы и разбор результата живут здесь.
+
+Возврат схемы к ``head`` — тоже общее дело (``restore_head``): модуль, который
+прогоняет откат, обязан вернуть стенд в рабочее состояние даже после падения,
+иначе следующий запуск падал бы по несвязанной причине. Фикстура не ``autouse``:
+её запрашивают явно те модули, которые двигают ревизии, — иначе откаты переезжали
+бы в тесты, которые о них ничего не знают.
 
 Нет ни стенда, ни Docker — тесты пропускаются, а не падают: ``make test``
 обязан оставаться зелёным на машине без Docker (AGENT.md, §5).
@@ -27,12 +35,13 @@ import os
 import socket
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import urlparse
 
 import docker
 import pytest
 from alembic import command
-from sqlalchemy import delete, event, text
+from sqlalchemy import Row, delete, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 
@@ -285,3 +294,91 @@ async def capture_sql(session: AsyncSession, operation: Coroutine[object, object
     finally:
         event.remove(sync_engine, 'before_cursor_execute', record)
     return statements
+
+
+#: Запрос каталога Postgres: читается фактическое состояние БД, а не метаданные
+#: моделей — иначе тест доказал бы лишь то, что SQLAlchemy умеет описывать
+#: таблицы, но ничего про то, что миграции их создали.
+PUBLIC_TABLES_QUERY = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+
+#: Запрос индексов схемы ``public``. Возвращает пару ``(имя, таблица)``: одного
+#: имени мало, ведь имя индекса уникально только внутри своей таблицы.
+PUBLIC_INDEXES_QUERY = "SELECT indexname, tablename FROM pg_indexes WHERE schemaname = 'public'"
+
+
+async def fetch_rows(query: str) -> list[Row[Any]]:
+    """Выполнить запрос и вернуть все строки результата.
+
+    Отдельное соединение на каждый вызов: каталог читают тесты, которые сами
+    двигают ревизии, и переиспользовать их транзакцию нельзя — она может быть
+    откатываемой, и тогда проверка увидела бы не committed-состояние базы.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text(query))
+            return list(result.mappings())
+    finally:
+        await engine.dispose()
+
+
+#: Запрос «есть ли таблица» — параметризован, а не собран строкой. Имя таблицы
+#: приходит из теста, и ``S608`` (ruff) правомерно считает склейку в SQL вектором
+#: инъекции, даже когда значение заведомо своё: безопасность обязана обеспечиваться
+#: параметром, а не тем, что «сюда никто чужое не подставит».
+TABLE_PRESENCE_QUERY = "SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = :table_name"
+
+
+async def fetch_first(query: str, **parameters: object) -> object | None:
+    """Выполнить запрос с параметрами и вернуть первое значение первой строки.
+
+    Значение или ``None``, если строк нет. Отдельное соединение на каждый вызов:
+    каталог читают тесты, которые сами двигают ревизии, и переиспользовать их
+    транзакцию нельзя — она может быть откатываемой, и тогда проверка увидела бы
+    не committed-состояние базы.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text(query), parameters)
+            row = result.mappings().first()
+            return None if row is None else next(iter(row.values()))
+    finally:
+        await engine.dispose()
+
+
+async def query_first_value(query: str) -> object | None:
+    """Выполнить запрос без параметров и вернуть первое значение первой строки."""
+    return await fetch_first(query)
+
+
+async def list_public_tables() -> set[str]:
+    """Имена таблиц, реально созданных в схеме ``public``."""
+    return {str(row['tablename']) for row in await fetch_rows(PUBLIC_TABLES_QUERY)}
+
+
+async def query_table_presence(table_name: str) -> bool:
+    """Есть ли таблица в схеме ``public``.
+
+    Отдельный запрос вместо поиска в :func:`list_public_tables`: проверке «создал ли
+    миграцию таблицу» нужен факт поимённо, а перебор всего списка и сравнение
+    множеств отвечало бы на другой вопрос — «созданы ли все таблицы разом», — и
+    стало бы повторением проверки из ``test_migrations.py``.
+    """
+    return await fetch_first(TABLE_PRESENCE_QUERY, table_name=table_name) is not None
+
+
+async def list_public_indexes() -> dict[str, str]:
+    """Индексы схемы ``public`` как отображение ``имя индекса -> имя таблицы``."""
+    return {str(row['indexname']): str(row['tablename']) for row in await fetch_rows(PUBLIC_INDEXES_QUERY)}
+
+
+@pytest.fixture
+def restore_head() -> Iterator[None]:
+    """Вернуть базу к ``head`` после теста, даже если он упал.
+
+    Иначе упавший тест на откате оставил бы стенд без схемы, и следующий запуск
+    ``make test`` падал бы уже по другой, не связанной с ним причине.
+    """
+    yield
+    command.upgrade(build_alembic_config(), 'head')
