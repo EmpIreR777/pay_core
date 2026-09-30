@@ -35,14 +35,13 @@ from typing import Any
 import pytest
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import delete, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.config import settings
 from src.core_service.application.ports.idempotency_store import IdempotencyRecord
 from src.db.idempotency_store import RedisPostgresIdempotencyStore, record_key, reservation_key
-from src.db.models.idempotency_key import IdempotencyKeyModel
-from tests.integration.conftest import build_session_maker
+from tests.integration.conftest import build_session_maker, clear_idempotency_records
 
 pytestmark = [
     pytest.mark.integration,
@@ -91,21 +90,13 @@ class _StubClock:
 def clean_records_table() -> Iterator[None]:
     """Очистить ``idempotency_keys`` до и после модуля.
 
-    Отдельное соединение: адаптер пишет и коммитит сам, и ``DELETE`` внутри чужой
-    откатываемой транзакции остался бы в базе после её отката.
+    Общая обвязка очистки живёт в ``conftest`` (``clear_idempotency_records``):
+    её читает и сценарий создания платежа (T-4.3), и копия здесь разошлась бы с
+    ней при первой же правке.
     """
-
-    async def truncate() -> None:
-        engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(delete(IdempotencyKeyModel))
-        finally:
-            await engine.dispose()
-
-    asyncio.run(truncate())
+    asyncio.run(clear_idempotency_records())
     yield
-    asyncio.run(truncate())
+    asyncio.run(clear_idempotency_records())
 
 
 @pytest.fixture

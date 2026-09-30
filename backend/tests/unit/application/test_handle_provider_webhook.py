@@ -297,6 +297,26 @@ async def test_parallel_delivery_of_same_event_is_rejected(account: Account) -> 
     assert environment.account_balance(account.id) == _money(BALANCE - AMOUNT)
 
 
+async def test_reservation_is_taken_before_the_answer_is_read(account: Account) -> None:
+    """Захват идёт **до** чтения ответа — это и есть защита от гонки (T-4.3).
+
+    Обратный порядок («прочитать, потом захватить») оставлял окно: ``save`` снимает
+    захват, записав ответ, поэтому первая доставка успевала дописать ответ и отпустить
+    ключ, пока вторая уже прочитала пустоту. Тогда ``SET NX`` второй доставки проходит
+    на свободном ключе — и переход применился бы второй раз (например, возврат холда
+    был бы выполнен дважды). Захват первым делает «кто единственный» атомарным.
+    """
+    environment = SagaEnvironment.build()
+    payment = await _processing_payment(environment, account)
+
+    await environment.build_webhook_use_case().execute(_notification(payment, ProviderStatus.SUCCEEDED))
+
+    entries = list(environment.journal)
+    # Ищем шаг именно этой доставки: создание платежа выше тоже ходило в хранилище.
+    webhook_entries = entries[entries.index(f'lock.acquire:account:{payment.from_account_id}') :]
+    assert webhook_entries.index('idempotency.acquire') < webhook_entries.index('idempotency.get')
+
+
 async def test_conflicting_content_for_same_event_is_rejected(account: Account) -> None:
     """Тот же ``provider_event_id`` с другим статусом — конфликт, а не повтор."""
     environment = SagaEnvironment.build()

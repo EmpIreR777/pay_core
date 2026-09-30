@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from src.core_service.application.dto import CreatePaymentInput
+from src.core_service.application.dto import CreatePaymentInput, CreatePaymentOutput
 from src.core_service.application.ports.idempotency_store import IdempotencyRecord
 from src.core_service.application.ports.payment_provider import ProviderStatus
 from src.core_service.application.use_cases.create_payment import (
@@ -35,7 +35,7 @@ from src.core_service.domain.exceptions import (
     PaymentProviderError,
 )
 from src.core_service.domain.value_objects.currency import Currency
-from src.core_service.domain.value_objects.identifiers import AccountId
+from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
 from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
 from tests.fakes import FROZEN_NOW, SagaEnvironment
@@ -380,6 +380,75 @@ async def test_concurrent_reservation_stops_second_run(account: Account) -> None
 
     assert environment.provider.call_count == 0
     assert not environment.database.payments
+
+
+async def test_reservation_is_taken_before_the_answer_is_read(account: Account) -> None:
+    """Захват ключа идёт **до** чтения ответа — это и есть защита от гонки (T-4.3).
+
+    Обратный порядок («прочитать, потом захватить») оставлял окно: ``save`` снимает
+    захват, записав ответ, поэтому повтор успевал прочитать пустоту, а к моменту его
+    ``try_acquire`` ключ уже был свободен — и дубль уходил в сагу вторым платежом.
+    На живых Postgres и Redis это окно воспроизводится детерминированно
+    (``tests/integration/test_create_payment_idempotency.py``); здесь порядок
+    закреплён прямо, чтобы фейк поймал его за миллисекунды, без стенда.
+    """
+    environment = SagaEnvironment.build()
+    environment.add_account(account)
+
+    await environment.build_use_case().execute(_input(account.id))
+
+    entries = list(environment.journal)
+    assert entries.index('idempotency.acquire') < entries.index('idempotency.get')
+
+
+async def test_replay_releases_the_reservation_it_took(account: Account) -> None:
+    """Повтор отпускает захват, который взял сам: иначе ключ провисел бы до конца TTL.
+
+    Прямое следствие порядка «захват, потом чтение»: под ключом уже есть ответ, и наш
+    ``try_acquire`` проходит (предыдущий запуск отпустил ключ). Держать захват ради
+    готового ответа незачем, а следующий повтор обязан получить этот же ответ, а не
+    отказ «уже выполняется».
+    """
+    environment = SagaEnvironment.build()
+    environment.add_account(account)
+    use_case = environment.build_use_case()
+
+    await use_case.execute(_input(account.id))
+    await use_case.execute(_input(account.id))
+
+    assert KEY not in environment.idempotency_store.reserved
+
+
+async def test_replay_does_not_release_a_reservation_it_did_not_take(account: Account) -> None:
+    """Чужой захват повтор не снимает — это делает тот, кто его взял.
+
+    Состояние достижимо: ``save`` пишет ответ в базу и только затем снимает захват, и
+    повтор, пришедший в этот промежуток, читает уже готовый ответ, не имея захвата.
+    Сбросить чужой захват здесь нельзя — следующий запрос по этому ключу прошёл бы в сагу
+    по горячему следу, не имея никаких прав на ключ.
+    """
+    environment = SagaEnvironment.build()
+    environment.add_account(account)
+    data = _input(account.id)
+    environment.idempotency_store.records[KEY] = IdempotencyRecord(
+        key=KEY,
+        request_hash=_request_hash(data),
+        response=CreatePaymentOutput(
+            payment_id=PaymentId.new(),
+            status=PaymentStatus.PROCESSING,
+            amount=Money.from_number(Decimal('250.00'), Currency.RUB),
+            created_at=FROZEN_NOW,
+            provider_payment_id='provider-already-done',
+        ).to_idempotency_response(),
+        created_at=FROZEN_NOW,
+        expires_at=FROZEN_NOW + timedelta(seconds=IDEMPOTENCY_RECORD_TTL_SECONDS),
+    )
+    environment.idempotency_store.reserved.add(KEY)
+
+    await environment.build_use_case().execute(data)
+
+    assert KEY in environment.idempotency_store.reserved
+    assert environment.provider.call_count == 0
 
 
 async def test_response_is_saved_with_ttl_and_clock_timestamps(account: Account) -> None:

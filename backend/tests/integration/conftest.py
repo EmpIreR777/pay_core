@@ -49,6 +49,7 @@ from testcontainers.community.redis import RedisContainer
 
 from src.core.config import settings
 from src.db.models.account import AccountModel
+from src.db.models.idempotency_key import IdempotencyKeyModel
 from src.db.models.payment import PaymentModel
 from src.run_migrations import build_alembic_config, verify_schema, wait_for_database
 
@@ -295,6 +296,25 @@ async def clear_payment_data() -> None:
         async with engine.begin() as connection:
             await connection.execute(delete(PaymentModel))
             await connection.execute(delete(AccountModel))
+    finally:
+        await engine.dispose()
+
+
+async def clear_idempotency_records() -> None:
+    """Очистить ``idempotency_keys`` перед модулем тестов и после него.
+
+    Живёт здесь, а не в модуле хранилища (T-4.2): очищать ключи теперь обязаны и
+    проверки хранилища, и сценарии, которые работают через него (T-4.3), иначе
+    запись прошлого прогона сделала бы результат недетерминированным.
+
+    Отдельное соединение обязательно по той же причине, что в
+    :func:`clear_payment_data`: адаптер пишет и коммитит сам, и ``DELETE`` внутри
+    чужой откатываемой транзакции остался бы в базе после её отката.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(delete(IdempotencyKeyModel))
     finally:
         await engine.dispose()
 
