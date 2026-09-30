@@ -59,6 +59,7 @@ class Payment:
         '_failure_reason',
         '_from_account_id',
         '_id',
+        '_persisted_version',
         '_provider_payment_id',
         '_status',
         '_updated_at',
@@ -95,6 +96,7 @@ class Payment:
         self._amount: Money = amount
         self._status: PaymentStatus = status
         self._version: int = checked_version
+        self._persisted_version: int = checked_version
         self._provider_payment_id: str | None = checked_provider_payment_id
         self._failure_reason: str | None = checked_failure_reason
         self._created_at: datetime = effective_created_at
@@ -147,6 +149,16 @@ class Payment:
     def version(self) -> int:
         """Версия оптимистичной блокировки."""
         return self._version
+
+    @property
+    def persisted_version(self) -> int:
+        """Номер версии, о котором платёж знает, что он лежит в базе.
+
+        Оптимистичный ``UPDATE`` сверяется именно с ним, а не с ``version``:
+        последний успел вырасти на каждом переходе статуса, а хранилище ждёт то
+        значение, которое было прочитано.
+        """
+        return self._persisted_version
 
     @property
     def provider_payment_id(self) -> str | None:
@@ -224,6 +236,16 @@ class Payment:
     def cancel(self) -> None:
         """Отменяет платёж из статуса PENDING (CANCELLED)."""
         self.transition_to(PaymentStatus.CANCELLED)
+
+    # --- Синхронизация версии с хранилищем ---
+
+    def mark_persisted(self) -> None:
+        """Запомнить, что текущее состояние платежа дошло до хранилища.
+
+        Без этого повторный ``update`` того же объекта сверялся бы со старой
+        версией — и падал бы на оптимистичном условии, хотя гонки не было.
+        """
+        self._persisted_version = self._version
 
     # --- Тождество сущности ---
 

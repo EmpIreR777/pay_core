@@ -1,12 +1,10 @@
 # ==============================================================================
 # Payment Gateway — инфраструктура.
-#
-# Линтер/тесты бэкенда живут в backend/Makefile, здесь только compose.
-# docker-compose.yml лежит в корне, поэтому Docker Compose сам находит файл
-# и сам подхватывает `.env` из корня репозитория — `-f` не требуется.
+
 # ==============================================================================
 
-.PHONY: help up down restart logs ps health otel-smoke clean volumes-check
+.PHONY: help up down restart logs ps health otel-smoke clean volumes-check \
+        migrate migrate-down migrate-check
 
 help: ## Показать список доступных команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -16,6 +14,15 @@ help: ## Показать список доступных команд
 
 up: ## Поднять инфраструктуру (postgres, redis, kafka, otel, jaeger, prometheus, grafana)
 	docker compose up -d
+
+migrate: ## Применить миграции БД (одноразовый контейнер migrations)
+	docker compose run --rm migrations
+
+migrate-down: ## Откатить все миграции БД (полная очистка схемы)
+	$(MAKE) -C backend migrate-down-base
+
+migrate-check: ## Проверить, что схема в БД совпадает с моделями
+	$(MAKE) -C backend migrate-check
 
 down: ## Остановить инфраструктуру (данные в volume'ах сохраняются)
 	docker compose down

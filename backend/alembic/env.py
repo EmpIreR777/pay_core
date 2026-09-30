@@ -1,50 +1,66 @@
+import asyncio
+from logging.config import fileConfig
+
 from alembic import context
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import Connection, pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.core.config import settings
 from src.db.models import Base
 
 config = context.config
+config.set_main_option('sqlalchemy.url', settings.DATABASE_URL.replace('%', '%%'))
 target_metadata = Base.metadata
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
+    """Собрать SQL миграций без подключения к базе (``alembic upgrade --sql``)."""
     context.configure(
-        url=settings.SQLALCHEMY_SYNC_DB_URL,
+        url=settings.DATABASE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={'paramstyle': 'named'},
-        version_table_schema='files',
-        include_schemas=True,
+        compare_type=True,
+        compare_server_default=True,
     )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    connectable = engine_from_config(
+def do_run_migrations(connection: Connection) -> None:
+    """Применить миграции в уже открытом соединении."""
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """Подключиться к Postgres по ``DATABASE_URL`` и прогнать миграции."""
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
-        url=settings.SQLALCHEMY_SYNC_DB_URL,
+        prefix='sqlalchemy.',
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        connection.execute(text('CREATE SCHEMA IF NOT EXISTS files'))
-        connection.execute(text('CREATE EXTENSION IF NOT EXISTS pg_trgm'))
-        connection.commit()
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
 
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            version_table_schema='files',
-            include_schemas=True,
-        )
+    await connectable.dispose()
 
-        with context.begin_transaction():
-            context.run_migrations()
+
+def run_migrations_online() -> None:
+    """Точка входа ``online``-режима: поднимает event loop и ждёт результата."""
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

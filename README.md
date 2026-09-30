@@ -306,7 +306,7 @@ cd backend && make otel-smoke              # отправить тестовую
 
 ```bash
 cd backend
-make test-integration   # 5 интеграционных тестов T-0.8
+make test-integration   # интеграционные тесты: Postgres + observability
 make test               # unit + integration
 ```
 
@@ -314,8 +314,10 @@ make test               # unit + integration
 `sleep` «наугад»): трейс — в Jaeger по `trace_id`, метрика — в экспортёре
 Collector'а и в Prometheus после `scrape_interval` (15s).
 
-Если стенд не поднят, интеграционные тесты **пропускаются** (skip) с понятным
-сообщением, а не падают — `make test` остаётся зелёным без Docker.
+Если стенд observability не поднят, его тесты **пропускаются** (skip) с понятным
+сообщением, а не падают. Тесты Postgres стенд не требуют: без него они поднимают
+временный контейнер (testcontainer), а без Docker вовсе пропускаются — поэтому
+`make test` остаётся зелёным и без стенда, и без Docker.
 
 ### Дашборд Grafana
 

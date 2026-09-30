@@ -332,6 +332,36 @@ services:
       retries: 10
       start_period: 30s
 
+  # ---------------------------------------------------------------------------
+  # Миграции — одноразовый job, а не сервис (T-3.2)
+  #
+  # Почему не в каждом сервисе, как было в entrypoint.sh: у шлюза четыре
+  # процесса (api, core, workers, tasks), и если миграции запускает каждый, то
+  # они стартуют одновременно и конкурируют за одни и те же DDL-операции —
+  # классическая гонка, которая проявляется уже на втором сервисе. Плюс
+  # перезапуск любого сервиса становится поводом трогать схему.
+  #
+  # Здесь сервис один, отрабатывает и завершается. Приложение (Эпик 6-7)
+  # подключается через depends_on: {condition: service_completed_successfully}:
+  # пока миграции не прошли успешно, приложение не стартует. restart: "no"
+  # обязателен — из service-defaults сюда нельзя, иначе упавшая миграция
+  # превратится в бесконечный цикл перезапусков, маскирующий ошибку.
+  # ---------------------------------------------------------------------------
+  migrations:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: pay-core-migrations:local
+    container_name: pay-migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-pay_core}
+    networks: [pay-net]
+    command: ["python", "-m", "src.run_migrations"]
+    restart: "no"
+
 # ------------------------------------------------------------------------------
 # Сеть и тома
 # ------------------------------------------------------------------------------

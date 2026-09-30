@@ -59,8 +59,15 @@ def test_settings_loads_from_env() -> None:
         assert loaded_settings.YOOKASSA_SECRET_KEY.get_secret_value() == 'live_secret_key_abcdef'
 
 
-def test_settings_derives_sync_dsn_from_async() -> None:
-    """Синхронный DSN (legacy-шим для Alembic) выводится из DATABASE_URL."""
+def test_settings_has_no_legacy_sync_dsn() -> None:
+    """Синхронного DSN в настройках больше нет (T-3.2).
+
+    Он существовал только ради синхронного ``alembic/env.py``. Миграции переведены
+    на async-путь, поэтому и DSN-шим удалён: пока он лежит в настройках, рано или
+    поздно кто-то возьмёт его для нового кода и уедет на драйвере, которого в
+    приложении нет.
+    """
     settings = Settings(_env_file=None)
 
-    assert settings.SQLALCHEMY_SYNC_DB_URL == 'postgresql+psycopg2://postgres:postgres@localhost:5432/pay_core'
+    assert not hasattr(settings, 'SQLALCHEMY_SYNC_DB_URL')
+    assert 'postgresql+asyncpg' in settings.DATABASE_URL

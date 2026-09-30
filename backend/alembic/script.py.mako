@@ -5,7 +5,8 @@ Revises: ${down_revision | comma,n}
 Create Date: ${create_date}
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 
 from alembic import op
 import sqlalchemy as sa
@@ -19,10 +20,10 @@ depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
+    """Применить миграцию."""
     ${upgrades if upgrades else "pass"}
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Откатить миграцию."""
     ${downgrades if downgrades else "pass"}

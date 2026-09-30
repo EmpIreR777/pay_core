@@ -448,6 +448,34 @@ def test_version_is_restored_as_loaded_from_storage() -> None:
     assert account.version == 43
 
 
+def test_persisted_version_stays_put_until_storage_confirms() -> None:
+    """Ожидаемая версия в хранилище не двигается вместе с изменениями.
+
+    Оптимистичный ``UPDATE`` сверяется именно с ней (T-3.6): пока адаптер хранилища
+    не подтвердил запись, она остаётся прочитанной. Иначе проверка версии не поймала
+    бы чужую запись — сравнивать было бы не с чем.
+    """
+    account = make_account('100.00', version=5)
+
+    assert account.persisted_version == 5
+
+    account.deposit(rub('1.00'))
+
+    assert account.version == 6
+    assert account.persisted_version == 5
+
+    account.mark_persisted()
+
+    assert account.persisted_version == 6
+
+
+def test_persisted_version_matches_version_for_new_account() -> None:
+    """Новый счёт ждёт в хранилище свою начальную версию."""
+    account = Account.create(Currency.RUB)
+
+    assert account.persisted_version == account.version == INITIAL_VERSION
+
+
 # --- Тождество ---
 
 

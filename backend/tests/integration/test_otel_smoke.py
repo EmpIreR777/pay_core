@@ -34,7 +34,7 @@ from tests.integration.conftest import (
     PROMETHEUS_URL,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures('observability_stack')]
 
 #: Таймауты ожидания с запасом относительно батчинга (5s) и scrape (15s).
 TRACE_WAIT_TIMEOUT_SECONDS = 30.0
@@ -69,7 +69,8 @@ def wait_until[T](check: Callable[[], T | None], timeout_seconds: float, descrip
 def probe_result() -> SmokeProbeResult:
     """Отправляет одну порцию телеметрии в Collector для всех проверок модуля.
 
-    Стенд проверяет autouse-фикстура ``observability_stack`` из conftest.
+    Стенд проверяет фикстура ``observability_stack`` из conftest, подключённая
+    ко всему модулю через ``pytestmark``.
     """
     return run_probe(
         SmokeProbeConfig(

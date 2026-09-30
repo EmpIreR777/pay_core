@@ -45,7 +45,7 @@ __all__ = ('INITIAL_VERSION', 'MIN_VERSION', 'Account')
 class Account:
     """Платёжный счёт в одной валюте с балансом, блокировкой и версией."""
 
-    __slots__ = ('_balance', '_id', '_is_blocked', '_version')
+    __slots__ = ('_balance', '_id', '_is_blocked', '_persisted_version', '_version')
 
     def __init__(
         self,
@@ -73,6 +73,7 @@ class Account:
         self._balance = balance
         self._is_blocked = is_blocked
         self._version = checked_version
+        self._persisted_version = checked_version
 
     # --- Создание ---
 
@@ -106,6 +107,16 @@ class Account:
     def version(self) -> int:
         """Версия для оптимистичной блокировки; растёт при каждом изменении."""
         return self._version
+
+    @property
+    def persisted_version(self) -> int:
+        """Версия, которую счёт считает лежащей в хранилище.
+
+        До первого изменения совпадает с ``version``, после — остаётся прежней.
+        Именно она уходит в условие ``UPDATE`` как ожидаемая, поэтому гонка версий
+        видна адаптеру, а не превращается в «последнюю запись».
+        """
+        return self._persisted_version
 
     @property
     def is_blocked(self) -> bool:
@@ -204,6 +215,17 @@ class Account:
     def _touch(self) -> None:
         """Отмечает факт изменения состояния для оптимистичной блокировки."""
         self._version += 1
+
+    # --- Синхронизация версии с хранилищем ---
+
+    def mark_persisted(self) -> None:
+        """Запомнить, что текущее состояние счёта дошло до базы.
+
+        Вызывает адаптер хранилища — после успешного ``INSERT``/``UPDATE``. Без
+        подтверждения второе сохранение того же объекта сверялось бы с версией,
+        которой в базе уже нет, и падало бы на оптимистичном условии без гонки.
+        """
+        self._persisted_version = self._version
 
     # --- Тождество ---
 

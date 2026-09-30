@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, SecretStr, computed_field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # <project>/backend/src
@@ -60,17 +60,6 @@ class Settings(BaseSettings):
     YOOKASSA_SHOP_ID: str | None = None
     YOOKASSA_SECRET_KEY: SecretStr | None = None
     YOOKASSA_BASE_URL: str = 'https://api.yookassa.ru/v3'
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def SQLALCHEMY_SYNC_DB_URL(self) -> str:  # noqa: N802
-        """LEGACY: синхронный DSN для старого ``alembic/env.py`` и ``run_migrations.py``.
-
-        TODO: удалить вместе с переводом Alembic на async-паттерн
-        и заменой legacy-раннера миграций. Новый код использует только
-        ``DATABASE_URL`` (async, asyncpg).
-        """
-        return self.DATABASE_URL.replace('postgresql+asyncpg://', 'postgresql+psycopg2://')
 
 
 settings = Settings()

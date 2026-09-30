@@ -1,121 +1,121 @@
+import asyncio
 import logging
 import sys
-import time
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, inspect, text
-from sqlalchemy.exc import DisconnectionError
-from sqlalchemy_utils import create_database, database_exists
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+#: Сколько ждать готовности базы и с каким интервалом повторов. Healthcheck
+#: compose даёт Postgres 20 с на старт, поэтому запас берём заметно больше:
+CONNECT_ATTEMPTS: int = 10
+CONNECT_DELAY_SECONDS: int = 3
 
-def init_database() -> None:
-    """Инициализация базы данных."""
-    sync_url = settings.SQLALCHEMY_SYNC_DB_URL
-    schema_name = 'files'
+#: Таблицы, которые обязаны появиться после ``upgrade head``. Сверяется факт, а
+#: не код возврата Alembic: пустая миграция (модели разошлись с версиями)
+#: отрабатывает «успешно», не создав ничего.
+EXPECTED_TABLES: frozenset[str] = frozenset(
+    {
+        'accounts',
+        'payments',
+        'outbox',
+        'idempotency_keys',
+        'processed_events',
+        'provider_webhook_events',
+    }
+)
 
-    engine = create_engine(sync_url)
 
-    if not database_exists(sync_url):
-        create_database(sync_url)
-        logger.info('✅ PostgreSQL база данных создана успешно.')
-    else:
-        logger.info('✅ База данных уже существует.')
+def build_alembic_config() -> Config:
+    """Собрать конфигурацию Alembic.
 
+    ``script_location`` задаётся явно, а не берётся из ``alembic.ini``: скрипт
+    запускается из произвольного каталога (в контейнере это ``/``), и полагаться
+    на относительный путь значит запустить миграции не оттуда.
+    """
+    backend_root = Path(__file__).resolve().parent.parent
+    config = Config()
+    config.set_main_option('script_location', str(backend_root / 'alembic'))
+    # DSN не передаём: env.py берёт DATABASE_URL из настроек сам. Дублировать
+    # источник правды здесь — значит завести второе место, где живёт адрес БД.
+    return config
+
+
+async def wait_for_database() -> None:
+    """Дождаться, пока Postgres примет соединения.
+
+    :raises OperationalError: если база не поднялась за все попытки.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
     try:
-        with engine.connect() as conn:
-            logger.info(f'Создаём схему {schema_name}, если она не существует')
-            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
-            conn.commit()
-            logger.info(f'✅ Схема {schema_name} готова')
-    except Exception as e:
-        logger.error(f'❌ Ошибка при создании схемы: {e}')
-        raise
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            try:
+                async with engine.connect() as connection:
+                    await connection.execute(text('SELECT 1'))
+            except OperationalError as error:
+                if attempt == CONNECT_ATTEMPTS:
+                    raise
+                logger.warning(
+                    'БД недоступна (попытка %d/%d): %s. Повтор через %d с',
+                    attempt,
+                    CONNECT_ATTEMPTS,
+                    error,
+                    CONNECT_DELAY_SECONDS,
+                )
+                await asyncio.sleep(CONNECT_DELAY_SECONDS)
+            else:
+                logger.info('Соединение с Postgres установлено')
+                return
     finally:
-        engine.dispose()
+        await engine.dispose()
 
 
-def run_migrations_with_retry(max_attempts: int = 3, delay: int = 4) -> None:
-    """Запускает миграции с повторными попытками при ошибках подключения."""
-    attempt = 0
-    while attempt < max_attempts:
-        try:
-            run_migrations()
-            return
-        except DisconnectionError as e:
-            attempt += 1
-            if attempt == max_attempts:
-                logger.error(f'❌ Потерпел неудачу после {max_attempts} попыток: {e}')
-                raise
-            logger.warning(f'⚠️  Ошибка соединения (попытка {attempt}/{max_attempts}): {e}')
-            time.sleep(delay)
+async def verify_schema() -> None:
+    """Убедиться, что после миграции на месте все ожидаемые таблицы.
 
-
-def run_migrations() -> None:
-    """Запуск Alembic миграций."""
-    sync_url = settings.SQLALCHEMY_SYNC_DB_URL
-    engine = create_engine(sync_url)
-
+    :raises RuntimeError: если каких-то таблиц нет.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
     try:
-        # Инициализируем БД если её нет
-        init_database()
-        # Проверяем подключение
-        check_connection(engine)
-
-        # Запускаем миграции
-        migrations_path = Path(__file__).parent.parent / 'alembic'
-        alembic_cfg = Config()
-        alembic_cfg.set_main_option('script_location', str(migrations_path))
-        alembic_cfg.set_main_option('sqlalchemy.url', sync_url)
-
-        logger.info('🔄 Применяем миграции alembic...')
-        command.upgrade(alembic_cfg, 'head')
-
-        # Проверяем таблицы
-        inspector = inspect(engine)
-        required_tables = [
-            'stored_files',
-            'alerts',
-        ]
-        existing_tables = inspector.get_table_names(schema='files')
-
-        missing_tables = set(required_tables) - set(existing_tables)
-        if missing_tables:
-            raise Exception(f'❌ Отсутствующие таблицы после переноса: {missing_tables}')
-
-        logger.info('✅ Миграция завершена успешно')
-
-    except Exception as e:
-        logger.error(f'❌ Ошибка во время миграции: {e}')
-        raise
+        async with engine.connect() as connection:
+            rows = await connection.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"),
+            )
+            existing = {str(row[0]) for row in rows}
     finally:
-        engine.dispose()
+        await engine.dispose()
+
+    missing = EXPECTED_TABLES - existing
+    if missing:
+        raise RuntimeError(f'После миграции отсутствуют таблицы: {sorted(missing)}')
+    logger.info('Схема на месте: %d таблиц', len(existing))
 
 
-def check_connection(engine: Engine) -> bool:
-    """Проверяет соединение с базой данных."""
-    try:
-        with engine.connect() as conn:
-            conn.execute(text('SELECT 1'))
-            logger.info('✅ Проверка подключения к базе данных: успешно')
-            return True
-    except Exception as e:
-        logger.error(f'❌ Не удалось проверить подключение к базе данных: {e}')
-        return False
+def main() -> int:
+    """Применить миграции до ``head`` и проверить результат.
+
+    :returns: код возврата для ``sys.exit``.
+    """
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(name)s - %(message)s')
+    logger.info('Применяем миграции к %s', settings.DATABASE_URL.rsplit('@', maxsplit=1)[-1])
+    asyncio.run(wait_for_database())
+    command.upgrade(build_alembic_config(), 'head')
+    asyncio.run(verify_schema())
+    logger.info('Миграции применены успешно')
+    return 0
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(name)s - %(message)s')
-    logger.info('🚀 Начинаю процесс миграции БД...')
     try:
-        run_migrations_with_retry()
-        logger.info('Vse migratsii uspeshno primeneny!')
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f'❌ Критическая ошибка при выполнении миграций: {e}')
+        sys.exit(main())
+    except Exception as error:
+        # Точка входа процесса: логируем с трассировкой и гасим стек — код
+        logger.error('Миграции не применены: %s', error, exc_info=True)
         sys.exit(1)

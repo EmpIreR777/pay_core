@@ -91,8 +91,8 @@ Observability:
 |---|---|---|---|---|
 | **0** | **Bootstrap репозитория** | [docs/plan/epic-00-bootstrap/plan.md](docs/plan/epic-00-bootstrap/plan.md) | `[x] DONE` | `[x]` |
 | **1** | **Domain Layer** | [docs/plan/epic-01-domain/plan.md](docs/plan/epic-01-domain/plan.md) | `[x] DONE` | `[x]` |
-| **2** | **Application Layer (Use-cases & Ports)** | [docs/plan/epic-02-application/plan.md](docs/plan/epic-02-application/plan.md) | `[ ] TODO` | `[ ]` |
-| **3** | **Postgres Infrastructure** | [docs/plan/epic-03-postgres/plan.md](docs/plan/epic-03-postgres/plan.md) | `[ ] TODO` | `[ ]` |
+| **2** | **Application Layer (Use-cases & Ports)** | [docs/plan/epic-02-application/plan.md](docs/plan/epic-02-application/plan.md) | `[x] DONE` | `[x]` |
+| **3** | **Postgres Infrastructure** | [docs/plan/epic-03-postgres/plan.md](docs/plan/epic-03-postgres/plan.md) | `[x] DONE` | `[x]` |
 | **4** | **Idempotency** | [docs/plan/epic-04-idempotency/plan.md](docs/plan/epic-04-idempotency/plan.md) | `[ ] TODO` | `[ ]` |
 | **5** | **Distributed Locks** | [docs/plan/epic-05-distributed-locks/plan.md](docs/plan/epic-05-distributed-locks/plan.md) | `[ ] TODO` | `[ ]` |
 | **6** | **gRPC Server** | [docs/plan/epic-06-grpc-server/plan.md](docs/plan/epic-06-grpc-server/plan.md) | `[ ] TODO` | `[ ]` |
@@ -108,6 +108,12 @@ Observability:
 ---
 
 ## 📋 Сводный чек-лист
+
+> **Отложенные решения** живут в [docs/plan/deferred.md](docs/plan/deferred.md).
+> Сейчас там два пункта, и оба важны для планирования: **D-1** — хранить ли сырой
+> статус провайдера в строке платежа (вернуться на T-10.4), **D-2** — как обходить
+> зависшие платежи, чтобы не возвращать одну и ту же порцию (тоже T-10.4).
+> Пункт покидает файл, только когда решение принято и зафиксировано задачей или ADR.
 
 - [ ] Clean Architecture с портами и адаптерами
 - [ ] Domain-Driven Design (entities, VOs, events)

@@ -353,3 +353,32 @@ def test_payment_repr() -> None:
     assert 'Payment(' in repr_str
     assert '123.45' in repr_str
     assert 'PENDING' in repr_str
+
+
+# --- Ожидаемая версия в хранилище (T-3.6) ---
+
+
+def test_persisted_version_is_separate_from_version() -> None:
+    """Ожидаемая версия платежа остаётся прочитанной, пока запись не подтверждена.
+
+    Переход статуса поднимает ``version``, но не ``persisted_version``: именно с
+    последней сверяется оптимистичный ``UPDATE``, и она обязана описывать то, что
+    лежит в базе, а не то, что платёж уже успел изменить в памяти.
+    """
+    payment = make_payment(version=4)
+
+    payment.process('ext-1')
+
+    assert payment.version == 5
+    assert payment.persisted_version == 4
+
+    payment.mark_persisted()
+
+    assert payment.persisted_version == 5
+
+
+def test_persisted_version_matches_version_for_new_payment() -> None:
+    """Новый платёж ждёт в хранилище свою начальную версию."""
+    payment = make_payment()
+
+    assert payment.persisted_version == payment.version == INITIAL_VERSION

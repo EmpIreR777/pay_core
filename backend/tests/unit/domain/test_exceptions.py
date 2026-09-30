@@ -20,6 +20,7 @@ from src.core_service.domain.exceptions import (
     InvalidTransition,
     InvalidValueError,
     NegativeAmountError,
+    OptimisticLockError,
     PaymentProviderError,
 )
 
@@ -36,6 +37,7 @@ ALL_DOMAIN_EXCEPTIONS = (
     InvalidTransition,
     DuplicateOperation,
     PaymentProviderError,
+    OptimisticLockError,
 )
 
 BUSINESS_EXCEPTIONS = (
@@ -44,6 +46,7 @@ BUSINESS_EXCEPTIONS = (
     InvalidTransition,
     DuplicateOperation,
     PaymentProviderError,
+    OptimisticLockError,
 )
 
 VALUE_OBJECT_EXCEPTIONS = (
@@ -100,6 +103,7 @@ def test_specific_inheritance_chains() -> None:
         (InvalidTransition, 'Переход из SETTLED в PROCESSING запрещён'),
         (DuplicateOperation, 'Операция с ключом idempotency-123 уже выполняется'),
         (PaymentProviderError, 'Провайдер эквайринга вернул 502 Bad Gateway'),
+        (OptimisticLockError, 'Строку переписала другая транзакция'),
     ],
 )
 def test_exception_instantiation_and_message(exc_cls: type[DomainError], message: str) -> None:
@@ -124,6 +128,7 @@ def test_exception_instantiation_and_message(exc_cls: type[DomainError], message
         InvalidTransition('bad transition'),
         DuplicateOperation('duplicate operation'),
         PaymentProviderError('provider timeout'),
+        OptimisticLockError('optimistic lock conflict'),
     ],
 )
 def test_catching_via_domain_error(exc: DomainError) -> None:
@@ -156,3 +161,18 @@ def test_catching_payment_provider_error() -> None:
     """PaymentProviderError корректно выбрасывается и перехватывается."""
     with pytest.raises(PaymentProviderError, match='Provider connection timeout'):
         raise PaymentProviderError('Provider connection timeout')
+
+
+def test_optimistic_lock_error_builds_message_from_context() -> None:
+    """Текст конфликта версий собирается в одном месте, а не в каждом адаптере.
+
+    Счёт и платёж падают по одной причине — «строку переписали между чтением и
+    записью», — и формулировка обязана совпадать. Иначе разбор инцидентов искал бы
+    один и тот же отказ по двум разным словам.
+    """
+    error = OptimisticLockError.for_version_conflict('Счёт', 'acc-1', 7)
+
+    assert str(error) == 'Счёт acc-1: ожидалась версия 7, но строку переписала другая транзакция'
+    assert isinstance(error, OptimisticLockError)
+    assert isinstance(error, DomainError)
+    assert not isinstance(error, ValueError)
