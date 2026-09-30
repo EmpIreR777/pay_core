@@ -40,7 +40,7 @@ from src.core_service.application.use_cases.watch_payment import WatchPaymentUse
 from src.core_service.domain.entities.account import Account
 from src.core_service.domain.entities.payment import Payment
 from src.core_service.domain.events.base import DomainEvent
-from src.core_service.domain.exceptions import DuplicateOperation
+from src.core_service.domain.exceptions import LockAcquisitionError
 from src.core_service.domain.value_objects.identifiers import AccountId, PaymentId
 from src.core_service.domain.value_objects.money import Money
 from src.core_service.domain.value_objects.payment_status import PaymentStatus
@@ -283,7 +283,7 @@ class FakeLockManager:
     async def _acquired(self, resource: str) -> AsyncIterator[FakeDistributedLock]:
         lock = await self.acquire(resource)
         if lock is None:
-            raise DuplicateOperation(f'Ресурс {resource} уже заблокирован')
+            raise LockAcquisitionError(f'Ресурс {resource} уже удерживается')
         try:
             yield lock
         finally:

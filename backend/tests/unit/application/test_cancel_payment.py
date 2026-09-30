@@ -25,9 +25,9 @@ from src.core_service.domain.entities.payment import INITIAL_VERSION, Payment
 from src.core_service.domain.events import PaymentCancelled
 from src.core_service.domain.exceptions import (
     AccountBlocked,
-    DuplicateOperation,
     EntityNotFoundError,
     InvalidTransition,
+    LockAcquisitionError,
     PaymentProviderError,
 )
 from src.core_service.domain.value_objects.currency import Currency
@@ -507,7 +507,7 @@ async def test_busy_account_lock_is_reported(account: Account) -> None:
     resource = f'{ACCOUNT_LOCK_RESOURCE_PREFIX}{account.id}'
     await environment.lock_manager.acquire(resource)
 
-    with pytest.raises(DuplicateOperation):
+    with pytest.raises(LockAcquisitionError):
         await environment.build_cancel_use_case().execute(_input(payment))
 
     assert environment.only_payment().status is PaymentStatus.PENDING
