@@ -41,9 +41,11 @@ from urllib.parse import urlparse
 import docker
 import pytest
 from alembic import command
+from redis.asyncio import Redis
 from sqlalchemy import Row, delete, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.redis import RedisContainer
 
 from src.core.config import settings
 from src.db.models.account import AccountModel
@@ -78,6 +80,11 @@ POSTGRES_TEST_IMAGE = 'postgres:16-alpine'
 POSTGRES_TEST_USER = 'postgres'
 POSTGRES_TEST_PASSWORD = 'postgres'
 POSTGRES_TEST_DB = 'pay_core'
+
+#: Образ временного Redis testcontainer. Тот же, что и в docker-compose.yml: тесты
+#: обязаны ходить в ту же версию кэша, что и стенд, — иначе проверяется не
+#: продакшн-инфраструктура.
+REDIS_TEST_IMAGE = 'redis:7-alpine'
 
 
 def is_tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -123,6 +130,17 @@ def postgres_is_reachable() -> bool:
         return False
 
 
+def redis_is_reachable() -> bool:
+    """Отвечает ли Redis по адресу из ``REDIS_URL``.
+
+    Проверка идёт «сырым» сокетом по хосту и порту из DSN — так же, как у
+    Postgres: она не тянет за собой соединение и завершается быстро, когда стенда
+    нет.
+    """
+    parsed = urlparse(settings.REDIS_URL)
+    return is_tcp_port_open(parsed.hostname or 'localhost', parsed.port or 6379)
+
+
 def docker_daemon_is_reachable() -> bool:
     """Отвечает ли Docker-демон — он нужен, чтобы поднять временный Postgres.
 
@@ -135,6 +153,58 @@ def docker_daemon_is_reachable() -> bool:
     except docker.errors.DockerException:
         return False
     return True
+
+
+@pytest.fixture(scope='session')
+def redis_stack() -> Iterator[None]:
+    """Обеспечить интеграционным тестам хранилища Redis: стенд либо testcontainer.
+
+    Тот же порядок выбора, что у ``postgres_stack``: сначала живой стенд
+    (``make up``), затем временный контейнер (DoD T-3.7, автономность), затем
+    skip — чтобы ``make test`` оставался зелёным на машине без Docker
+    (AGENT.md, §5). DSN подменяется через ``settings.REDIS_URL`` на время
+    сессии, иначе обвязка читала бы адрес стенда вместо контейнера.
+
+    Ryuk отключается по той же причине, что в ``postgres_stack``: на Colima сокет
+    Docker не виден внутри VM и репер падает с 500.
+    """
+    if redis_is_reachable():
+        yield
+        return
+
+    if not docker_daemon_is_reachable():
+        pytest.skip(
+            'Redis недоступен по REDIS_URL, а Docker для testcontainer не отвечает: '
+            'поднимите стенд (`make up` в корне репозитория) или запустите Docker.',
+        )
+
+    os.environ.setdefault('TESTCONTAINERS_RYUK_DISABLED', 'true')
+    container = RedisContainer(REDIS_TEST_IMAGE)
+    container.start()
+    original_url = settings.REDIS_URL
+    try:
+        settings.REDIS_URL = container.get_connection_url()
+        yield
+    finally:
+        settings.REDIS_URL = original_url
+        container.stop()
+
+
+@pytest.fixture
+async def redis_client(redis_stack: None) -> AsyncIterator[Redis]:
+    """Клиент Redis на время теста, с чистой базой.
+
+    Чистота обязательна: ключи идемпотентности живут в общем Redis, и запись,
+    оставленная прошлым прогоном (или другим модулем), сделала бы результат
+    недетерминированным — тест падал бы на стенде и проходил на чистой машине.
+    """
+    client = Redis.from_url(settings.REDIS_URL)
+    try:
+        await client.flushdb()
+        yield client
+    finally:
+        await client.flushdb()
+        await client.aclose()
 
 
 @pytest.fixture(scope='session')
