@@ -19,6 +19,7 @@ from src.core_service.domain.exceptions import (
     InvalidIdentifierError,
     InvalidTransition,
     InvalidValueError,
+    LockAcquisitionError,
     NegativeAmountError,
     OptimisticLockError,
     PaymentProviderError,
@@ -38,6 +39,7 @@ ALL_DOMAIN_EXCEPTIONS = (
     DuplicateOperation,
     PaymentProviderError,
     OptimisticLockError,
+    LockAcquisitionError,
 )
 
 BUSINESS_EXCEPTIONS = (
@@ -47,6 +49,7 @@ BUSINESS_EXCEPTIONS = (
     DuplicateOperation,
     PaymentProviderError,
     OptimisticLockError,
+    LockAcquisitionError,
 )
 
 VALUE_OBJECT_EXCEPTIONS = (
@@ -104,6 +107,7 @@ def test_specific_inheritance_chains() -> None:
         (DuplicateOperation, 'Операция с ключом idempotency-123 уже выполняется'),
         (PaymentProviderError, 'Провайдер эквайринга вернул 502 Bad Gateway'),
         (OptimisticLockError, 'Строку переписала другая транзакция'),
+        (LockAcquisitionError, 'Ресурс account:acc-1 занят: ожидание 1.0 с истекло'),
     ],
 )
 def test_exception_instantiation_and_message(exc_cls: type[DomainError], message: str) -> None:
@@ -129,6 +133,7 @@ def test_exception_instantiation_and_message(exc_cls: type[DomainError], message
         DuplicateOperation('duplicate operation'),
         PaymentProviderError('provider timeout'),
         OptimisticLockError('optimistic lock conflict'),
+        LockAcquisitionError('lock acquisition timeout'),
     ],
 )
 def test_catching_via_domain_error(exc: DomainError) -> None:
