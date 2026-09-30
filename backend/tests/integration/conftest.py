@@ -13,10 +13,18 @@ testcontainer (T-3.7), поэтому ``pytest tests/integration/`` работа
 по-прежнему ждут ``make up``.
 
 Здесь же живёт общая обвязка работы с Postgres: сессия одной откатываемой
-транзакции, отдельная транзакция на своём соединении и перехват SQL. Репозитории
-платежей (T-3.4) и счетов (T-3.3) проверяются одинаково — изоляция транзакции,
-видимость из чужого соединения, «сколько запросов ушло на сервер», — и копия
-этой обвязки в каждом модуле разошлась бы с первой же правкой.
+транзакции, отдельная транзакция на своём соединении, перехват SQL и чтение
+каталога БД. Репозитории платежей (T-3.4) и счетов (T-3.3) проверяются одинаково —
+изоляция транзакции, видимость из чужого соединения, «сколько запросов ушло на
+сервер», — и копия этой обвязки в каждом модуле разошлась бы с первой же правки.
+То же касается каталога: его читают и проверки миграций (T-3.2), и проверки схемы
+конкретных таблиц (T-4.1), поэтому запросы и разбор результата живут здесь.
+
+Возврат схемы к ``head`` — тоже общее дело (``restore_head``): модуль, который
+прогоняет откат, обязан вернуть стенд в рабочее состояние даже после падения,
+иначе следующий запуск падал бы по несвязанной причине. Фикстура не ``autouse``:
+её запрашивают явно те модули, которые двигают ревизии, — иначе откаты переезжали
+бы в тесты, которые о них ничего не знают.
 
 Нет ни стенда, ни Docker — тесты пропускаются, а не падают: ``make test``
 обязан оставаться зелёным на машине без Docker (AGENT.md, §5).
@@ -27,17 +35,21 @@ import os
 import socket
 from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import urlparse
 
 import docker
 import pytest
 from alembic import command
-from sqlalchemy import delete, event, text
+from redis.asyncio import Redis
+from sqlalchemy import Row, delete, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.redis import RedisContainer
 
 from src.core.config import settings
 from src.db.models.account import AccountModel
+from src.db.models.idempotency_key import IdempotencyKeyModel
 from src.db.models.payment import PaymentModel
 from src.run_migrations import build_alembic_config, verify_schema, wait_for_database
 
@@ -69,6 +81,11 @@ POSTGRES_TEST_IMAGE = 'postgres:16-alpine'
 POSTGRES_TEST_USER = 'postgres'
 POSTGRES_TEST_PASSWORD = 'postgres'
 POSTGRES_TEST_DB = 'pay_core'
+
+#: Образ временного Redis testcontainer. Тот же, что и в docker-compose.yml: тесты
+#: обязаны ходить в ту же версию кэша, что и стенд, — иначе проверяется не
+#: продакшн-инфраструктура.
+REDIS_TEST_IMAGE = 'redis:7-alpine'
 
 
 def is_tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -114,6 +131,17 @@ def postgres_is_reachable() -> bool:
         return False
 
 
+def redis_is_reachable() -> bool:
+    """Отвечает ли Redis по адресу из ``REDIS_URL``.
+
+    Проверка идёт «сырым» сокетом по хосту и порту из DSN — так же, как у
+    Postgres: она не тянет за собой соединение и завершается быстро, когда стенда
+    нет.
+    """
+    parsed = urlparse(settings.REDIS_URL)
+    return is_tcp_port_open(parsed.hostname or 'localhost', parsed.port or 6379)
+
+
 def docker_daemon_is_reachable() -> bool:
     """Отвечает ли Docker-демон — он нужен, чтобы поднять временный Postgres.
 
@@ -126,6 +154,58 @@ def docker_daemon_is_reachable() -> bool:
     except docker.errors.DockerException:
         return False
     return True
+
+
+@pytest.fixture(scope='session')
+def redis_stack() -> Iterator[None]:
+    """Обеспечить интеграционным тестам хранилища Redis: стенд либо testcontainer.
+
+    Тот же порядок выбора, что у ``postgres_stack``: сначала живой стенд
+    (``make up``), затем временный контейнер (DoD T-3.7, автономность), затем
+    skip — чтобы ``make test`` оставался зелёным на машине без Docker
+    (AGENT.md, §5). DSN подменяется через ``settings.REDIS_URL`` на время
+    сессии, иначе обвязка читала бы адрес стенда вместо контейнера.
+
+    Ryuk отключается по той же причине, что в ``postgres_stack``: на Colima сокет
+    Docker не виден внутри VM и репер падает с 500.
+    """
+    if redis_is_reachable():
+        yield
+        return
+
+    if not docker_daemon_is_reachable():
+        pytest.skip(
+            'Redis недоступен по REDIS_URL, а Docker для testcontainer не отвечает: '
+            'поднимите стенд (`make up` в корне репозитория) или запустите Docker.',
+        )
+
+    os.environ.setdefault('TESTCONTAINERS_RYUK_DISABLED', 'true')
+    container = RedisContainer(REDIS_TEST_IMAGE)
+    container.start()
+    original_url = settings.REDIS_URL
+    try:
+        settings.REDIS_URL = container.get_connection_url()
+        yield
+    finally:
+        settings.REDIS_URL = original_url
+        container.stop()
+
+
+@pytest.fixture
+async def redis_client(redis_stack: None) -> AsyncIterator[Redis]:
+    """Клиент Redis на время теста, с чистой базой.
+
+    Чистота обязательна: ключи идемпотентности живут в общем Redis, и запись,
+    оставленная прошлым прогоном (или другим модулем), сделала бы результат
+    недетерминированным — тест падал бы на стенде и проходил на чистой машине.
+    """
+    client = Redis.from_url(settings.REDIS_URL)
+    try:
+        await client.flushdb()
+        yield client
+    finally:
+        await client.flushdb()
+        await client.aclose()
 
 
 @pytest.fixture(scope='session')
@@ -220,6 +300,25 @@ async def clear_payment_data() -> None:
         await engine.dispose()
 
 
+async def clear_idempotency_records() -> None:
+    """Очистить ``idempotency_keys`` перед модулем тестов и после него.
+
+    Живёт здесь, а не в модуле хранилища (T-4.2): очищать ключи теперь обязаны и
+    проверки хранилища, и сценарии, которые работают через него (T-4.3), иначе
+    запись прошлого прогона сделала бы результат недетерминированным.
+
+    Отдельное соединение обязательно по той же причине, что в
+    :func:`clear_payment_data`: адаптер пишет и коммитит сам, и ``DELETE`` внутри
+    чужой откатываемой транзакции остался бы в базе после её отката.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(delete(IdempotencyKeyModel))
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture
 async def session() -> AsyncIterator[AsyncSession]:
     """Сессия одной транзакции, которая по выходу откатывается.
@@ -285,3 +384,91 @@ async def capture_sql(session: AsyncSession, operation: Coroutine[object, object
     finally:
         event.remove(sync_engine, 'before_cursor_execute', record)
     return statements
+
+
+#: Запрос каталога Postgres: читается фактическое состояние БД, а не метаданные
+#: моделей — иначе тест доказал бы лишь то, что SQLAlchemy умеет описывать
+#: таблицы, но ничего про то, что миграции их создали.
+PUBLIC_TABLES_QUERY = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+
+#: Запрос индексов схемы ``public``. Возвращает пару ``(имя, таблица)``: одного
+#: имени мало, ведь имя индекса уникально только внутри своей таблицы.
+PUBLIC_INDEXES_QUERY = "SELECT indexname, tablename FROM pg_indexes WHERE schemaname = 'public'"
+
+
+async def fetch_rows(query: str) -> list[Row[Any]]:
+    """Выполнить запрос и вернуть все строки результата.
+
+    Отдельное соединение на каждый вызов: каталог читают тесты, которые сами
+    двигают ревизии, и переиспользовать их транзакцию нельзя — она может быть
+    откатываемой, и тогда проверка увидела бы не committed-состояние базы.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text(query))
+            return list(result.mappings())
+    finally:
+        await engine.dispose()
+
+
+#: Запрос «есть ли таблица» — параметризован, а не собран строкой. Имя таблицы
+#: приходит из теста, и ``S608`` (ruff) правомерно считает склейку в SQL вектором
+#: инъекции, даже когда значение заведомо своё: безопасность обязана обеспечиваться
+#: параметром, а не тем, что «сюда никто чужое не подставит».
+TABLE_PRESENCE_QUERY = "SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = :table_name"
+
+
+async def fetch_first(query: str, **parameters: object) -> object | None:
+    """Выполнить запрос с параметрами и вернуть первое значение первой строки.
+
+    Значение или ``None``, если строк нет. Отдельное соединение на каждый вызов:
+    каталог читают тесты, которые сами двигают ревизии, и переиспользовать их
+    транзакцию нельзя — она может быть откатываемой, и тогда проверка увидела бы
+    не committed-состояние базы.
+    """
+    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(text(query), parameters)
+            row = result.mappings().first()
+            return None if row is None else next(iter(row.values()))
+    finally:
+        await engine.dispose()
+
+
+async def query_first_value(query: str) -> object | None:
+    """Выполнить запрос без параметров и вернуть первое значение первой строки."""
+    return await fetch_first(query)
+
+
+async def list_public_tables() -> set[str]:
+    """Имена таблиц, реально созданных в схеме ``public``."""
+    return {str(row['tablename']) for row in await fetch_rows(PUBLIC_TABLES_QUERY)}
+
+
+async def query_table_presence(table_name: str) -> bool:
+    """Есть ли таблица в схеме ``public``.
+
+    Отдельный запрос вместо поиска в :func:`list_public_tables`: проверке «создал ли
+    миграцию таблицу» нужен факт поимённо, а перебор всего списка и сравнение
+    множеств отвечало бы на другой вопрос — «созданы ли все таблицы разом», — и
+    стало бы повторением проверки из ``test_migrations.py``.
+    """
+    return await fetch_first(TABLE_PRESENCE_QUERY, table_name=table_name) is not None
+
+
+async def list_public_indexes() -> dict[str, str]:
+    """Индексы схемы ``public`` как отображение ``имя индекса -> имя таблицы``."""
+    return {str(row['indexname']): str(row['tablename']) for row in await fetch_rows(PUBLIC_INDEXES_QUERY)}
+
+
+@pytest.fixture
+def restore_head() -> Iterator[None]:
+    """Вернуть базу к ``head`` после теста, даже если он упал.
+
+    Иначе упавший тест на откате оставил бы стенд без схемы, и следующий запуск
+    ``make test`` падал бы уже по другой, не связанной с ним причине.
+    """
+    yield
+    command.upgrade(build_alembic_config(), 'head')

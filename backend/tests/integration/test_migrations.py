@@ -5,6 +5,11 @@ DoD задачи — «``alembic upgrade head`` и ``alembic downgrade base`` р
 направления по-настоящему: рендеринг DDL ничего не говорит о том, применится ли
 DDL, и тем более ничего — про то, что откат не оставит половину схемы.
 
+Модуль отвечает за целый цикл ревизий: сохранённые ответы, повторное применение и
+обратимость. Схема отдельных таблиц проверяется по месту — там, где у таблицы есть
+свой смысл (например, ``idempotency_keys`` в T-4.1), — а этот файл следит, чтобы
+миграции вообще создают то, что задумано.
+
 Стенд не разрушается: тесты приводят базу к нужному состоянию сами, а после
 каждого теста возвращают ``head``. Без Postgres-стенда тесты работают против
 временного контейнера (testcontainer, T-3.7), а когда нет ни стенда, ни Docker,
@@ -13,64 +18,27 @@ DDL, и тем более ничего — про то, что откат не �
 """
 
 import asyncio
-from collections.abc import Iterator
 
 import pytest
 from alembic import command
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from src.core.config import settings
 from src.run_migrations import EXPECTED_TABLES, build_alembic_config
+from tests.integration.conftest import list_public_tables, query_first_value
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures('postgres_stack')]
+#: Фикстуры готовности и возврата к ``head`` запрашиваются явно: без них откат,
+#: прогнанный тестом, остался бы в базе навсегда.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.usefixtures('postgres_stack', 'restore_head'),
+]
 
 #: Служебная таблица Alembic переживает откат: в ней хранится номер ревизии, и
 #: без неё Alembic не поймёт, с чего продолжать. Единственная таблица, которая
 #: обязана остаться после ``downgrade base``.
 ALEMBIC_TABLE = 'alembic_version'
 
-#: Запрос каталога Postgres: читается фактическое состояние БД, а не метаданные
-#: моделей — иначе тест доказал бы лишь то, что SQLAlchemy умеет описывать
-#: таблицы, но ничего про то, что миграции их создали.
-TABLES_QUERY = "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-
 #: Проверка того, что частичный индекс outbox ушёл вместе с таблицей.
 INDEX_QUERY = "SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ix_outbox_unpublished'"
-
-
-async def query_first_value(query: str) -> object | None:
-    """Выполнить запрос и вернуть первое значение первой строки (или ``None``)."""
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    try:
-        async with engine.connect() as connection:
-            rows = await connection.execute(text(query))
-            row = rows.first()
-            return None if row is None else row[0]
-    finally:
-        await engine.dispose()
-
-
-async def list_public_tables() -> set[str]:
-    """Имена таблиц, реально созданных в схеме ``public``."""
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=None)
-    try:
-        async with engine.connect() as connection:
-            rows = await connection.execute(text(TABLES_QUERY))
-            return {str(row[0]) for row in rows}
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture(autouse=True)
-def restore_head() -> Iterator[None]:
-    """Вернуть базу к ``head`` после теста, даже если он упал.
-
-    Иначе упавший тест на откате оставил бы стенд без схемы, и следующий запуск
-    ``make test`` падал бы уже по другой, не связанной с ним причине.
-    """
-    yield
-    command.upgrade(build_alembic_config(), 'head')
 
 
 def test_upgrade_head_creates_every_planned_table() -> None:
