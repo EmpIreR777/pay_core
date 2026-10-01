@@ -39,6 +39,10 @@ WAIT_SECONDS = 0.2
 #: Короткий срок жизни замка — для проверки истечения по TTL.
 SHORT_TTL_SECONDS = 0.05
 
+#: Срок замка для проверок продления: интервал watchdog равен ``ttl / 3``, поэтому
+#: за время теста успевает пройти несколько тактов.
+RENEWAL_TTL_SECONDS = 0.3
+
 
 @pytest.fixture
 def manager(redis_client: Redis) -> RedisLockManager:
@@ -211,6 +215,53 @@ async def test_lock_expires_by_ttl_and_the_resource_becomes_available(
     second = await manager.acquire(RESOURCE)
     assert second is not None
     await second.release()
+
+
+# --- Продление срока (watchdog) -----------------------------------------------
+
+
+async def test_long_operation_keeps_the_lock_past_the_initial_ttl(
+    manager: RedisLockManager,
+    redis_client: Redis,
+) -> None:
+    """DoD: долгая операция удерживает замок дольше начального TTL.
+
+    Без watchdog ключ истёк бы прямо посреди работы, и ресурс захватил бы второй.
+    """
+    async with manager.lock(RESOURCE, ttl_seconds=RENEWAL_TTL_SECONDS) as handle:
+        # Операция длится заметно дольше исходного срока.
+        await asyncio.sleep(RENEWAL_TTL_SECONDS * 2.5)
+
+        assert handle.is_held is True
+        assert await redis_client.exists(lock_key(RESOURCE)) == 1
+        # Взаимное исключение держится всё время операции: второй не пройдёт.
+        assert await manager.acquire(RESOURCE) is None
+
+
+async def test_watchdog_stops_after_the_operation_ends(
+    manager: RedisLockManager,
+    redis_client: Redis,
+) -> None:
+    """Продление прекращается вместе с операцией: фоновой таски не остаётся."""
+    async with manager.lock(RESOURCE, ttl_seconds=RENEWAL_TTL_SECONDS) as handle:
+        assert handle.is_held is True
+
+    assert handle.is_held is False
+    assert handle._watchdog is None
+    assert await _stored_token(redis_client, RESOURCE) is None
+
+
+async def test_watchdog_does_not_resurrect_a_lock_taken_by_someone_else(
+    manager: RedisLockManager,
+    redis_client: Redis,
+) -> None:
+    """Потерянный замок не «воскрешаем»: продление не трогает чужой ключ."""
+    async with manager.lock(RESOURCE, ttl_seconds=RENEWAL_TTL_SECONDS):
+        await redis_client.set(lock_key(RESOURCE), 'someone-else')
+        # Проходит больше одного такта продления (ttl / LOCK_RENEWAL_DIVISOR).
+        await asyncio.sleep(RENEWAL_TTL_SECONDS)
+
+        assert await _stored_token(redis_client, RESOURCE) == 'someone-else'
 
 
 # --- Отказ инфраструктуры ≠ «занято» ------------------------------------------

@@ -12,7 +12,9 @@ import pytest
 from src.core_service.application import ports
 from src.db.lock_manager import (
     LOCK_KEY_PREFIX,
+    LOCK_RENEWAL_DIVISOR,
     RELEASE_SCRIPT,
+    RENEW_SCRIPT,
     RedisDistributedLock,
     RedisLockManager,
     _milliseconds,
@@ -21,6 +23,10 @@ from src.db.lock_manager import (
 )
 
 RESOURCE = 'account:6c1f-4a1e'
+
+#: TTL замка в юнит-проверках: важно лишь, что он ненулевой (от него считается
+#: интервал продления); поведение сроков доказывается на живом Redis.
+LOCK_TTL_MS = 30_000
 
 
 def _manager() -> RedisLockManager:
@@ -35,7 +41,7 @@ def _lock(resource: str = RESOURCE) -> RedisDistributedLock:
     свойство ``token`` его возвращает. Формируем его вычислением, чтобы линтер не
     принял тестовую метку за захардкоженный «пароль» в аргументе ``token`` (S106).
     """
-    return RedisDistributedLock(_manager(), resource=resource, token=f'{resource}#owner')
+    return RedisDistributedLock(_manager(), resource=resource, token=f'{resource}#owner', ttl_ms=LOCK_TTL_MS)
 
 
 # --- Форма контракта ----------------------------------------------------------
@@ -113,14 +119,25 @@ def test_release_script_compares_the_token_before_deleting() -> None:
     assert "redis.call('del'" in RELEASE_SCRIPT
 
 
-def test_fresh_lock_reports_held_until_marked_released() -> None:
-    """``is_held`` — взгляд владельца: ``True`` до освобождения и ``False`` после."""
+def test_renew_script_extends_the_ttl_only_for_the_matching_token() -> None:
+    """Продление тоже сверяет токен: продлить (воскресить) чужой замок нельзя."""
+    assert "redis.call('get'" in RENEW_SCRIPT
+    assert "redis.call('pexpire'" in RENEW_SCRIPT
+
+
+def test_renewal_interval_is_shorter_than_the_ttl() -> None:
+    """Продлеваем чаще, чем истекает срок: одна задержка не уронит замок."""
+    assert LOCK_RENEWAL_DIVISOR > 1
+
+
+async def test_stopping_renewal_marks_the_lock_released() -> None:
+    """``is_held`` — взгляд владельца: ``True`` до остановки продления и ``False`` после."""
     handle = _lock()
 
     assert handle.resource == RESOURCE
     assert handle.token
     assert handle.is_held is True
 
-    handle._mark_released()
+    await handle._stop_renewal()
 
     assert handle.is_held is False

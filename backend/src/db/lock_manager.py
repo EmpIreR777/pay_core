@@ -20,6 +20,12 @@
   может подождать освобождения ресурса и лишь потом отступить. Ожидания по
   умолчанию нет (``DEFAULT_LOCK_WAIT_SECONDS``): держать операцию в очереди —
   осознанное решение вызывающего, а не поведение по умолчанию.
+* **Продление срока (watchdog)** — пока операция выполняется под ``lock``, фоновая
+  задача периодически продлевает TTL (``RENEW_SCRIPT``, тоже со сверкой токена).
+  Без этого долгая операция «пережила» бы свой TTL: замок истёк бы прямо посреди
+  работы, и параллельная операция вошла бы в тот же ресурс. Продление живёт ровно
+  столько, сколько тело ``async with``, и останавливается на выходе; если процесс
+  умрёт, watchdog умрёт вместе с ним и замок освободится по TTL.
 
 Решения, которые стоит проговорить:
 
@@ -43,7 +49,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from types import TracebackType
 from typing import Final, Self
 from uuid import uuid4
@@ -77,6 +83,22 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
+
+#: Продление срока замка тем же токеном, одной атомарной операцией. Как и снятие,
+#: сверяет владельца: продлить (то есть «воскресить») чужой замок нельзя — иначе
+#: истёкший замок вернулся бы к жизни уже после того, как ресурс занял новый
+#: владелец.
+RENEW_SCRIPT: Final = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('pexpire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+#: Во сколько раз пауза между продлениями короче TTL (``ttl / LOCK_RENEWAL_DIVISOR``).
+#: Продлеваем заметно чаще, чем истекает срок: одна задержка планировщика не должна
+#: оставить операцию без защиты.
+LOCK_RENEWAL_DIVISOR: Final = 3
 
 
 def lock_key(resource: str) -> str:
@@ -114,12 +136,14 @@ class RedisDistributedLock:
     сниматься — вручную (``release``) и автоматически (``async with``).
     """
 
-    __slots__ = ('_held', '_manager', '_resource', '_token')
+    __slots__ = ('_held', '_manager', '_resource', '_token', '_ttl_ms', '_watchdog')
 
-    def __init__(self, manager: RedisLockManager, *, resource: str, token: str) -> None:
+    def __init__(self, manager: RedisLockManager, *, resource: str, token: str, ttl_ms: int) -> None:
         self._manager = manager
         self._resource = resource
         self._token = token
+        self._ttl_ms = ttl_ms
+        self._watchdog: asyncio.Task[None] | None = None
         self._held = True
 
     @property
@@ -156,19 +180,58 @@ class RedisDistributedLock:
         """Снять замок на выходе из ``async with``, даже если тело упало."""
         await self.release()
 
-    def _mark_released(self) -> None:
-        """Пометить замок снятым.
+    def _start_renewal(self) -> None:
+        """Запустить фоновое продление срока на время операции (T-5.3).
 
-        Зовётся менеджером: через него проходят **оба** пути освобождения —
-        ``await handle.release()`` и ``await manager.release(handle)``. Иначе
-        прямое снятие через менеджер оставляло бы ``is_held`` в положении
-        ``True`` и врало бы вызывающему.
+        Заводит его менеджер из ``lock``: контекстный менеджер и есть «операция»,
+        поэтому watchdog живёт ровно столько, сколько тело ``async with``.
+        Низкоуровневый ``acquire`` продления не заводит — он остаётся замком с
+        явным сроком, который истечёт сам, если его не снять.
+        """
+        self._watchdog = asyncio.create_task(self._renew_forever())
+
+    async def _renew_forever(self) -> None:
+        """Продлевать срок, пока замок удерживается и остаётся нашим."""
+        interval = self._ttl_ms / 1000 / LOCK_RENEWAL_DIVISOR
+        while True:
+            await asyncio.sleep(interval)
+            if not self._held:
+                return
+            try:
+                extended = await self._manager._renew(
+                    resource=self._resource,
+                    token=self._token,
+                    ttl_ms=self._ttl_ms,
+                )
+            except RedisError:
+                # Redis моргнул: срок ещё не вышел — пробуем следующим тактом.
+                continue
+            if not extended:
+                # Замок больше не наш (истёк и перехвачен) — продлевать нечего.
+                return
+
+    async def _stop_renewal(self) -> None:
+        """Остановить продление и перевести замок в состояние «снят».
+
+        Отменённую таску **дожидаемся** (``await`` после ``cancel``): иначе она
+        осталась бы висеть до следующего такта, а на выходе из процесса сыпалось
+        бы «Task was destroyed but it is pending». Через этот метод проходят оба
+        пути освобождения — ``await handle.release()`` и
+        ``await manager.release(handle)``, — поэтому ``is_held`` не расходится с
+        действительностью.
         """
         self._held = False
+        task = self._watchdog
+        self._watchdog = None
+        if task is None:
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 class RedisLockManager:
-    """Реализация порта ``LockManager`` на Redis (T-5.2).
+    """Реализация порта ``LockManager`` на Redis (T-5.2, T-5.3).
 
     Владельцем соединения не является: клиент Redis общий на процесс (как и у
     хранилища идемпотентности), а адаптер лишь пользуется им.
@@ -213,10 +276,16 @@ class RedisLockManager:
         ttl_seconds: float,
         wait_seconds: float,
     ) -> AsyncGenerator[DistributedLock]:
-        """Тело ``lock``: захват, отдача замка сценарию и гарантированное снятие."""
+        """Тело ``lock``: захват, продление на время операции и снятие на выходе.
+
+        Пока тело ``async with`` выполняется, фоновый watchdog (T-5.3) продлевает
+        срок замка, поэтому длинная операция не теряет его на середине. На выходе —
+        в том числе при исключении — продление останавливается, а замок снимается.
+        """
         handle = await self.acquire(resource, ttl_seconds=ttl_seconds, wait_seconds=wait_seconds)
         if handle is None:
             raise LockAcquisitionError(f'Ресурс {resource} занят: ожидание {wait_seconds} с истекло')
+        handle._start_renewal()
         try:
             yield handle
         finally:
@@ -228,8 +297,18 @@ class RedisLockManager:
         *,
         ttl_seconds: float = DEFAULT_LOCK_TTL_SECONDS,
         wait_seconds: float = DEFAULT_LOCK_WAIT_SECONDS,
-    ) -> DistributedLock | None:
+    ) -> RedisDistributedLock | None:
         """Захватить замок: ``SET NX PX`` и, если нужно, ожидание освобождения.
+
+        Продления здесь нет: ``acquire`` — низкоуровневый путь с явным сроком, и
+        ему неизвестно, где закончится «операция» вызывающего. Watchdog заводит
+        высокоуровневый ``lock`` (T-5.3); замок, взятый ``acquire``, истечёт по TTL,
+        если его не снять.
+
+        Возвращается конкретный ``RedisDistributedLock``, а не порт
+        ``DistributedLock``: сузить тип возврата — законно (ковариантность), а
+        ``lock`` нужен доступ к запуску watchdog без приведения типов. Вызывающим
+        через порт это всё тот же ``DistributedLock``.
 
         :returns: замок с уникальным токеном либо ``None``, если ресурс держит
             кто-то другой и ожидание истекло (``wait_seconds == 0`` — одна
@@ -244,7 +323,7 @@ class RedisLockManager:
         deadline = time.monotonic() + wait_seconds
         while True:
             if await self._redis.set(key, token, nx=True, px=ttl_ms):
-                return RedisDistributedLock(self, resource=resource, token=token)
+                return RedisDistributedLock(self, resource=resource, token=token, ttl_ms=ttl_ms)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
@@ -258,8 +337,18 @@ class RedisLockManager:
         замок и так истечёт по TTL — пере-защита безопаснее потери координации.
         """
         if isinstance(handle, RedisDistributedLock):
-            handle._mark_released()
+            await handle._stop_renewal()
         try:
             await self._redis.eval(RELEASE_SCRIPT, 1, lock_key(handle.resource), handle.token)
         except RedisError:
             return
+
+    async def _renew(self, *, resource: str, token: str, ttl_ms: int) -> bool:
+        """Продлить срок замка тем же токеном; ``False`` — замок уже не наш.
+
+        Сверка токена обязательна (Lua): «воскресить» чужой замок нельзя — иначе
+        истёкший замок вернулся бы к жизни уже после того, как ресурс занял новый
+        владелец, и взаимное исключение сломалось бы в обратную сторону.
+        """
+        extended = await self._redis.eval(RENEW_SCRIPT, 1, lock_key(resource), token, ttl_ms)
+        return bool(extended)
