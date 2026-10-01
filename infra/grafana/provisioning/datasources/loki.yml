@@ -25,22 +25,59 @@ datasources:
       # 1000 — компромисс между «хватит для чтения» и «не повесит браузер».
       maxLines: 1000
       derivedFields:
-        # Клик по trace_id в строке лога открывает трейс в Jaeger:
-        # из лога — в трейс одним кликом, без копирования 32-символьного id.
+        # Переход «из лога в трейс»: в деталях лога появляется кликабельная
+        # ссылка, которая открывает трейс в Jaeger — без копирования
+        # 32-символьного trace_id руками.
         #
-        # matcherRegex ищет подстроку `trace_id=<hex>` в ТЕКСТЕ логовой
-        # строки, поэтому приложения обязаны писать trace_id в само
-        # сообщение. Это задача T-12.10 (structlog с автоподмешиванием
-        # trace_id/span_id). Пока приложение этого не делает, ссылки не
-        # появятся, но сам Loki и поиск по нему уже работают.
+        # ПОЧЕМУ matcherType: label, а НЕ matcherRegex по тексту строки.
+        # Это главный момент конфигурации, и он проверен на живом стенде
+        # (см. tests/integration/test_log_trace_correlation.py).
+        #
+        # Loki 3.x раскладывает OTLP-логи так: ТЕКСТ строки — это только
+        # тело сообщения, а trace_id/span_id лежат в structured metadata и
+        # возвращаются в поле `labels` лог-фрейма Grafana. Проверено запросом
+        # к стенду: line = 'paycore otel smoke probe log record', при этом
+        # в labels есть trace_id=... и span_id=....
+        #
+        # Старая конфигурация искала `trace_id=(\w+)` РЕГУЛЯРКОЙ ПО ТЕКСТУ
+        # строки (без matcherType это поведение по умолчанию). Такой поиск
+        # по телу сообщения не мог сработать никогда: подстроки `trace_id=`
+        # в тексте нет, она лежит в отдельном поле. Ссылка не появлялась
+        # ни при каких данных — это и был дефект.
+        #
+        # matcherType: label меняет ЧТО ищется: matcherRegex становится не
+        # регуляркой по строке, а ИМЕНЕМ поля в labels. Поэтому здесь
+        # 'trace_id' без '=' и без скобок — это имя structured-metadata
+        # поля, а не шаблон.
+        #
+        # Бонус: log-фрейм Loki — legacy-типа (поля labels/Line/tsNs), и
+        # Grafana строит по нему LogRowModel.labels ровно из этого поля,
+        # поэтому label-мэтчер и находит trace_id.
         - name: TraceID
-          matcherRegex: 'trace_id=(\w+)'
+          matcherType: label
+          matcherRegex: trace_id
           # '$${__value.raw}' — экранированный в YAML спецшаблон Grafana:
           # подставляется реальный trace_id, открывается поиск в Jaeger.
           url: '$${__value.raw}'
           datasourceUid: jaeger
+          # Подпись ссылки. Без неё Grafana показывает саму ссылку
+          # текстом «View trace», но в ru-интерфейсе это выглядит
+          # непонятно — по клику открывается полная карточка трейса.
+          urlDisplayLabel: 'Открыть трейс'
         - name: SpanID
           # Показываем как метку, но без ссылки: Grafana не умеет открывать
           # span внутри трейса по одному лишь span_id.
-          matcherRegex: 'span_id=(\w+)'
+          matcherType: label
+          matcherRegex: span_id
           url: ''
+      # correlations — автоматическая связка лог→трейс в деталях лога.
+      # Отдельный от derivedFields механизм Grafana 11+: он не требует
+      # описания полей и сам подставляет ссылку на трейс по полю path.
+      # Держим его в паре с derivedFields: derivedFields даёт ссылку
+      # в самой строке лога, correlations — в развёрнутых деталях,
+      # и вместе они закрывают оба места, где инженер смотрит логи.
+      correlations:
+        - name: TraceID
+          datasourceUid: jaeger
+          # path — имя поля, значение которого станет id трейса.
+          path: trace_id
