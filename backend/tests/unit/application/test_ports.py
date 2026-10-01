@@ -6,10 +6,12 @@
 """
 
 import inspect
+from uuid import uuid4
 
 import pytest
 
 from src.core_service.application import ports
+from src.core_service.domain.exceptions import DomainError, LockAcquisitionError
 
 #: Все порты, которые обязан предоставить прикладной слой по T-2.1.
 PROTOCOL_PORTS: tuple[type, ...] = (
@@ -95,6 +97,51 @@ def test_port_properties(port: type, property_name: str) -> None:
 def test_lock_returns_async_context_manager_factory() -> None:
     """``LockManager.lock`` — синхронная фабрика асинхронного контекстного менеджера."""
     assert not inspect.iscoroutinefunction(ports.LockManager.lock)
+
+
+# --- Контракт распределённых блокировок (T-5.1) -------------------------------
+
+
+def test_lock_signature_defaults_match_port_constants() -> None:
+    """Дефолты ``lock``/``acquire`` берутся из констант порта, а не из литералов.
+
+    Две копии одной цифры разошлись бы: адаптер (T-5.2) и сценарий (T-5.4)
+    обязаны говорить об одном и том же TTL и окне ожидания.
+    """
+    lock_params = inspect.signature(ports.LockManager.lock).parameters
+    acquire_params = inspect.signature(ports.LockManager.acquire).parameters
+
+    assert lock_params['ttl_seconds'].default == ports.DEFAULT_LOCK_TTL_SECONDS
+    assert lock_params['wait_seconds'].default == ports.DEFAULT_LOCK_WAIT_SECONDS
+    assert acquire_params['ttl_seconds'].default == ports.DEFAULT_LOCK_TTL_SECONDS
+    assert acquire_params['wait_seconds'].default == ports.DEFAULT_LOCK_WAIT_SECONDS
+
+
+def test_default_lock_ttl_is_positive() -> None:
+    """TTL по умолчанию положителен: нулевая блокировка не защищала бы ресурс."""
+    assert ports.DEFAULT_LOCK_TTL_SECONDS > 0
+
+
+def test_default_lock_wait_does_not_block() -> None:
+    """По умолчанию захват не ждёт: конкуренция не должна подвешивать вызов."""
+    assert ports.DEFAULT_LOCK_WAIT_SECONDS == 0.0
+
+
+def test_account_lock_resource_prefix_builds_resource_name() -> None:
+    """Формат ресурса счёта — источник правды и для сценариев, и для Redis-адаптера."""
+    account_id = uuid4()
+
+    resource = f'{ports.ACCOUNT_LOCK_RESOURCE_PREFIX}{account_id}'
+
+    assert resource == f'account:{account_id}'
+
+
+def test_lock_acquisition_error_is_domain_coordination_failure() -> None:
+    """Ошибку неудачного ``lock`` поднимает домен, и это не ошибка значения входа."""
+    error = LockAcquisitionError('Ресурс account:acc-1 занят: ожидание 1.0 с истекло')
+
+    assert isinstance(error, DomainError)
+    assert not isinstance(error, ValueError)
 
 
 # --- Структурное соответствие: объект с нужными методами проходит isinstance ---
