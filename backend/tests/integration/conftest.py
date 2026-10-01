@@ -62,9 +62,14 @@ COLLECTOR_METRICS_PORT = 8889
 COLLECTOR_SELF_METRICS_PORT = 8888
 JAEGER_PORT = 16686
 PROMETHEUS_PORT = 9090
+LOKI_PORT = 3100
+GRAFANA_PORT = 3000
 
 JAEGER_QUERY_URL = f'http://localhost:{JAEGER_PORT}'
 PROMETHEUS_URL = f'http://localhost:{PROMETHEUS_PORT}'
+#: Loki — долговременное хранилище логов; в нём проверяется связка «лог → трейс»
+#: (trace_id лежит в structured metadata записи, а не в тексте строки).
+LOKI_QUERY_URL = f'http://localhost:{LOKI_PORT}'
 #: health_check extension Collector'а отвечает в корне.
 COLLECTOR_HEALTH_URL = f'http://localhost:{COLLECTOR_HEALTH_PORT}/'
 #: prometheus-экспортёр Collector'а отдаёт телеметрию приложений на /metrics
