@@ -1,0 +1,276 @@
+// Транспортный контракт Core Service (ЭПИК 6, T-6.1).
+//
+// Здесь описан ровно тот словарь, которым клиенты (FastAPI BFF, ЭПИК 7) и
+// сервер обмениваются по gRPC. Контракт — не бизнес-логика: правила статусов,
+// валидация и движения денег живут в домене, а этот файл фиксирует форму
+// сообщений между процессами. Источник истины для сообщений — DTO прикладного
+// слоя (``core_service/application/dto/payment.py``): адаптер gRPC (T-6.3)
+// переводит protobuf в них и обратно.
+//
+// Соглашения контракта:
+//
+//   * идентификаторы (платежа, счёта, события) — строки с UUID: по сети они
+//     всегда едут каноническим текстом, а разбор в доменный тип делает адаптер;
+//   * деньги — сообщение ``Money``: величина десятичной строкой плюс код
+//     валюты ISO 4217. Дробные числа с плавающей точкой в деньгах запрещены;
+//   * время — ``google.protobuf.Timestamp`` (UTC). Домен хранит только
+//     timezone-aware UTC-время, транспорт это не смягчает;
+//   * у enum'а обязателен нулевой член ``*_UNSPECIFIED`` (правило proto3):
+//     значение «не задано» не должно совпадать ни с одним рабочим статусом;
+//   * необязательные поля — помечены ``optional`` (explicit presence), чтобы
+//     сервер различал «поля нет» и «поле пустое».
+//
+// Эволюция контракта. Версия в имени пакета (``payments.v1``) — не украшение:
+// несовместимое изменение оформляется новым пакетом ``payments.v2`` и новым
+// каталогом ``proto/payments/v2/``, а ``v1`` продолжает обслуживать уже
+// написанных клиентов. Ломать ``v1`` на месте нельзя.
+
+syntax = "proto3";
+
+package payments.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// PaymentsService — операции жизненного цикла платежа.
+//
+// Список методов повторяет прикладные сценарии один в один, чтобы сервисер
+// был тонким делегирующим слоем (T-6.3), а не вторым местом с логикой:
+//
+//   * CreatePayment          → CreatePaymentUseCase          (T-2.4);
+//   * GetPayment             → GetPaymentUseCase             (T-2.5);
+//   * CancelPayment          → CancelPaymentUseCase          (T-2.6);
+//   * WatchPayment           → WatchPaymentUseCase           (T-2.8);
+//   * HandleProviderCallback → HandleProviderWebhookUseCase  (T-2.7).
+service PaymentsService {
+  // Создаёт платёж: списывает средства со счёта и регистрирует операцию у
+  // провайдера. Повтор с тем же ``idempotency_key`` не создаёт второй платёж,
+  // а возвращает результат первого.
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse);
+
+  // Читает платёж; «зависший» PROCESSING-платёж актуализируется у провайдера.
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse);
+
+  // Отменяет платёж в статусе PENDING и возвращает удержанные средства.
+  rpc CancelPayment(CancelPaymentRequest) returns (CancelPaymentResponse);
+
+  // Server-streaming: отдаёт состояние платежа, пока статус меняется либо не
+  // истёк срок потока. Первый кадр — текущее состояние, поток конечен.
+  rpc WatchPayment(WatchPaymentRequest) returns (stream WatchPaymentResponse);
+
+  // Принимает уведомление от платёжного провайдера (вебхук). Повторная
+  // доставка того же события не меняет состояние дважды — идемпотентность по
+  // ``provider_event_id``.
+  rpc HandleProviderCallback(HandleProviderCallbackRequest) returns (HandleProviderCallbackResponse);
+}
+
+// Статус жизненного цикла платежа.
+//
+// Имена членов продублированы префиксом ``PAYMENT_STATUS_`` не для красоты:
+// в proto3 значения enum'а живут в общей области видимости пакета, и две шкалы
+// со статусами PENDING/PROCESSING без префиксов не скомпилировались бы.
+//
+// Рабочие значения совпадают по смыслу с доменным ``PaymentStatus``; перевод
+// «сырого» ответа шлюза в эту шкалу — работа адаптера провайдера, а не клиента.
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+
+  // Платёж зафиксирован, но операция у провайдера ещё не создана.
+  PAYMENT_STATUS_PENDING = 1;
+
+  // Операция передана провайдеру, ждём итогового статуса.
+  PAYMENT_STATUS_PROCESSING = 2;
+
+  // Операция успешно завершена, средства списаны.
+  PAYMENT_STATUS_SETTLED = 3;
+
+  // Операция отклонена или завершилась неуспешно.
+  PAYMENT_STATUS_FAILED = 4;
+
+  // Платёж отменён до передачи провайдеру, холд возвращён.
+  PAYMENT_STATUS_CANCELLED = 5;
+}
+
+// Канонический статус операции на стороне провайдера (вебхук).
+//
+// Отдельная от ``PaymentStatus`` шкала: конкретный шлюз может присылать свои
+// значения (``canceled``, ``waiting_for_capture``, ...) — адаптер приводит их к
+// этому закрытому набору, а прикладной слой переводит в ``PaymentStatus``.
+enum ProviderStatus {
+  PROVIDER_STATUS_UNSPECIFIED = 0;
+
+  // Уведомление принято провайдером, но операция ещё не обработана.
+  PROVIDER_STATUS_PENDING = 1;
+
+  // Операция обрабатывается.
+  PROVIDER_STATUS_PROCESSING = 2;
+
+  // Операция успешно завершена.
+  PROVIDER_STATUS_SUCCEEDED = 3;
+
+  // Операция отклонена или завершилась неуспешно.
+  PROVIDER_STATUS_FAILED = 4;
+
+  // По операции выполнен возврат.
+  PROVIDER_STATUS_REFUNDED = 5;
+}
+
+// Денежная сумма в конкретной валюте.
+//
+// Сумма и валюта неразделимы (конвертации в шлюзе нет), поэтому живут в одном
+// сообщении. ``amount`` — десятичная строка, а не ``double``: числа с плавающей
+// точкой теряют точность, а в деньгах это недопустимо (``0.1 + 0.2 != 0.3``).
+// Разбор строки в ``Decimal`` — работа адаптера (T-6.3).
+message Money {
+  // Величина в единицах валюты, например ``"100.00"`` или ``"1234"``.
+  string amount = 1;
+
+  // Код валюты по ISO 4217: три ASCII-буквы, например ``"RUB"``, ``"USD"``.
+  string currency = 2;
+}
+
+// Полное состояние платежа — то, что отдают чтение и поток.
+//
+// Форма один в один повторяет прикладной ``GetPaymentOutput`` (T-2.5): клиенту
+// и SSE-стриму (T-2.8) нужны обе метки времени, счёт-источник и причина отказа,
+// иначе UI пришлось бы угадывать, почему платёж ``FAILED``.
+message Payment {
+  // Идентификатор платежа (UUID строкой).
+  string payment_id = 1;
+
+  // Статус на момент ответа (для чтения — после актуализации у провайдера).
+  PaymentStatus status = 2;
+
+  // Сумма платежа с валютой.
+  Money amount = 3;
+
+  // Счёт списания (UUID строкой).
+  string from_account_id = 4;
+
+  // Время создания платежа (UTC).
+  google.protobuf.Timestamp created_at = 5;
+
+  // Время последнего изменения статуса (UTC).
+  google.protobuf.Timestamp updated_at = 6;
+
+  // Идентификатор операции у провайдера. Присутствует только там, где операция
+  // дошла до провайдера (``PROCESSING``/``SETTLED``); у ``PENDING`` отсутствует.
+  optional string provider_payment_id = 7;
+
+  // Причина отказа при ``FAILED``; иначе поле отсутствует.
+  optional string failure_reason = 8;
+}
+
+// Вход создания платежа.
+message CreatePaymentRequest {
+  // Счёт списания (UUID строкой).
+  string from_account_id = 1;
+
+  // Сумма списания; задаёт валюту платежа.
+  Money amount = 2;
+
+  // Ключ идемпотентности от клиента. Повтор с тем же ключом — тот же платёж.
+  string idempotency_key = 3;
+}
+
+// Результат создания платежа (``CreatePaymentOutput``, T-2.4).
+message CreatePaymentResponse {
+  // Идентификатор созданного платежа.
+  string payment_id = 1;
+
+  // Статус после саги (обычно ``PROCESSING`` либо ``FAILED``).
+  PaymentStatus status = 2;
+
+  // Сумма платежа с валютой.
+  Money amount = 3;
+
+  // Время создания платежа (UTC).
+  google.protobuf.Timestamp created_at = 4;
+
+  // Идентификатор операции у провайдера, если операция до него дошла.
+  optional string provider_payment_id = 5;
+}
+
+// Вход чтения платежа.
+message GetPaymentRequest {
+  // Идентификатор платежа (UUID строкой).
+  string payment_id = 1;
+}
+
+// Результат чтения платежа.
+message GetPaymentResponse {
+  // Актуальное состояние платежа.
+  Payment payment = 1;
+}
+
+// Вход отмены платежа.
+message CancelPaymentRequest {
+  // Идентификатор отменяемого платежа (UUID строкой).
+  string payment_id = 1;
+
+  // Необязательная причина отмены (для аудита и событий).
+  optional string reason = 2;
+}
+
+// Результат отмены платежа (``CancelPaymentOutput``, T-2.6).
+message CancelPaymentResponse {
+  // Идентификатор отменённого платежа.
+  string payment_id = 1;
+
+  // Статус после отмены (``CANCELLED``).
+  PaymentStatus status = 2;
+
+  // Сумма, возвращённая на счёт.
+  Money amount = 3;
+
+  // Счёт списания, на который вернулись средства.
+  string from_account_id = 4;
+
+  // Время создания платежа (UTC).
+  google.protobuf.Timestamp created_at = 5;
+
+  // Время отмены платежа (UTC).
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// Вход потока статусов платежа.
+message WatchPaymentRequest {
+  // Идентификатор наблюдаемого платежа (UUID строкой).
+  string payment_id = 1;
+}
+
+// Кадр потока: состояние платежа на момент смены статуса.
+message WatchPaymentResponse {
+  // Актуальное состояние платежа.
+  Payment payment = 1;
+}
+
+// Вход обработки вебхука провайдера (``HandleProviderWebhookInput``, T-2.7).
+//
+// Источник полей — уведомление шлюза: нашего ``payment_id`` в нём нет, платёж
+// находится по ``provider_payment_id``.
+message HandleProviderCallbackRequest {
+  // Идентификатор события у провайдера; он же ключ идемпотентности. Уникален и
+  // не меняется при повторной доставке.
+  string provider_event_id = 1;
+
+  // Идентификатор операции у провайдера.
+  string provider_payment_id = 2;
+
+  // Статус операции на шкале провайдера.
+  ProviderStatus provider_status = 3;
+}
+
+// Результат обработки вебхука (``HandleProviderWebhookOutput``, T-2.7).
+//
+// Намеренно только состояние — без флага «применено/пропущено»: обработка
+// идемпотентна, значит повторная доставка возвращает тот же ответ.
+message HandleProviderCallbackResponse {
+  // Идентификатор платежа, найденного по операции провайдера.
+  string payment_id = 1;
+
+  // Статус платежа после применения уведомления.
+  PaymentStatus status = 2;
+
+  // Сумма платежа (по ней видно, что деньги не двигались дважды).
+  Money amount = 3;
+}
