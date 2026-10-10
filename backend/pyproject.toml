@@ -65,6 +65,9 @@ cache-dir = ".ruff_cache"
 src = ["src"]
 exclude = [
     "tests/",
+    # Машинный вывод protoc: `make gen-proto` перезаписывает эти файлы целиком,
+    # поэтому правки линтера стёрлись бы при следующей генерации.
+    "src/core_service/interfaces/grpc/generated/",
 ]
 
 [tool.ruff.lint]
@@ -138,6 +141,13 @@ allowed-confusables = [
     "ANN",
     "S101",
     "S105",
+    # Тесты гоняют subprocess по своим путям (запуск генератора в T-6.2,
+    # git ls-files / git check-ignore). Аргументы — константы того же файла, а
+    # правила «чужого ввода» здесь ничего не защищают. Важно: per-file-ignores
+    # действуют и в pre-commit, где ruff получает файлы явно и потому игнорирует
+    # общий exclude по tests/ (поэтому по-другому они упали бы только на коммите).
+    "S603",
+    "S607",
 ]
 
 [tool.ruff.lint.isort]
@@ -164,6 +174,11 @@ exclude = [
     "tests/",
     "alembic/",
     "storage/",
+    # Машинный вывод protoc (T-6.2): исключён, чтобы mypy не проверял его при
+    # обходе `src`. Прямой импорт модуля отсюда исключение не отменяет — тогда
+    # сгенерированный grpc-стаб (у него нет .pyi) придётся приглушить точечным
+    # override; это делает T-6.3 вместе с сервисером, который его импортирует.
+    "src/core_service/interfaces/grpc/generated/",
 ]
 
 [tool.codespell]

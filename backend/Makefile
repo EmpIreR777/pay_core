@@ -92,13 +92,8 @@ alembic-rev: ## Создать ревизию: make alembic-rev m='add users'
 # ------------------------------------------------------------------------------
 # gRPC contracts
 # ------------------------------------------------------------------------------
-gen-proto: ## Сгенерировать Python-контракты из proto/
-	mkdir -p src/generated && uv run python -m grpc_tools.protoc \
-		-I ../proto \
-		--python_out=./src/generated \
-		--pyi_out=./src/generated \
-		--grpc_python_out=./src/generated \
-		$$(find ../proto -name '*.proto')
+gen-proto: ## Сгенерировать Python-контракты из proto/ в interfaces/grpc/generated
+	uv run python -m scripts.gen_proto
 
 # ------------------------------------------------------------------------------
 # Run services (single instance)

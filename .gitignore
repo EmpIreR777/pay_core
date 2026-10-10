@@ -19,6 +19,11 @@ backend/storage/
 .env.prod
 *.env
 
+# Сгенерированные gRPC-контракты (make gen-proto). Это машинный вывод из proto/,
+# поэтому в репозитории ему не место: закоммиченный код стал бы вторым,
+# устаревшим источником правды о контракте, который разошёлся бы с .proto.
+backend/src/core_service/interfaces/grpc/generated/
+
 # Caches & tooling
 .mypy_cache/
 .ruff_cache/

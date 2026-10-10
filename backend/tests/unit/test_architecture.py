@@ -23,6 +23,14 @@ SRC_ROOT = BACKEND_ROOT / 'src'
 DOMAIN_ROOT = SRC_ROOT / 'core_service' / 'domain'
 APPLICATION_ROOT = SRC_ROOT / 'core_service' / 'application'
 
+#: Каталоги машинного вывода, которые стражи не полируют. Сейчас это сгенерированные
+#: по ``.proto`` стабы (T-6.2): файлы там перезаписываются целиком при каждой
+#: генерации, а проверка дублей увидела бы в коде protobuf «свои» одинаковые тела
+#: функций и одинаковые тексты — и уронила бы ``make test`` на коде, который никто
+#: руками не писал. Исключение точечное: наш собственный код стражи по-прежнему
+#: видят целиком.
+GENERATED_ROOTS = (SRC_ROOT / 'core_service' / 'interfaces' / 'grpc' / 'generated',)
+
 #: Стандартная библиотека — единственное, кроме внутренних пакетов, что имеет
 #: право импортировать домен.
 STDLIB_MODULES = frozenset(sys.stdlib_module_names)
@@ -98,8 +106,13 @@ ALLOWED_DUPLICATES: dict[str, str] = {
 DUPLICATE_TEXT_MIN_LENGTH = 25
 
 
+def _is_generated(path: Path) -> bool:
+    """Лежит ли файл в каталоге машинного вывода (см. ``GENERATED_ROOTS``)."""
+    return any(root in path.parents for root in GENERATED_ROOTS)
+
+
 def _source_files() -> list[Path]:
-    return sorted(SRC_ROOT.rglob('*.py'))
+    return sorted(path for path in SRC_ROOT.rglob('*.py') if not _is_generated(path))
 
 
 def _module_key(path: Path) -> str:
@@ -197,7 +210,9 @@ TRIVIAL_STATEMENTS = (ast.Pass, ast.Raise)
 
 
 def _production_files() -> list[Path]:
-    return sorted(path for root in PRODUCTION_ROOTS for path in (BACKEND_ROOT / root).rglob('*.py'))
+    return sorted(
+        path for root in PRODUCTION_ROOTS for path in (BACKEND_ROOT / root).rglob('*.py') if not _is_generated(path)
+    )
 
 
 def _reexported_names(tree: ast.Module) -> set[str]:
